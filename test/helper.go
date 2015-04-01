@@ -185,6 +185,9 @@ func (h *Helper) createApp(t *c.C) (*ct.App, *ct.Release) {
 				Cmd:       []string{"sh", "-c", resourceCmd},
 				Resources: testResources(),
 			},
+			"sequential-printer": {
+				Cmd: []string{"sh", "-c", "while true ; do i=$((i + 1)) ; echo $i ; sleep 0.5 ; done"},
+			},
 		},
 	}
 	t.Assert(client.CreateRelease(release), c.IsNil)
