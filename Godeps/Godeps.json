@@ -76,6 +76,11 @@
 			"Rev": "7745cfd7f8e619cc9e6be450238e6253a57a227f"
 		},
 		{
+			"ImportPath": "github.com/coreos/go-systemd/dbus",
+			"Comment": "v2",
+			"Rev": "f743bc15d6bddd23662280b4ad20f7c874cdd5ad"
+		},
+		{
 			"ImportPath": "github.com/cupcake/goamz/aws",
 			"Comment": "r2013.02.13-151-g78d7708",
 			"Rev": "78d7708fc6ca767a04a26c777cdc618f39a34ac4"
@@ -299,19 +304,9 @@
 			"Rev": "e589dc7424dfad993f1fc646b66fa04306a2df2d"
 		},
 		{
-			"ImportPath": "github.com/docker/libcontainer/label",
-			"Comment": "v1.4.0-20-g4940cee",
-			"Rev": "4940cee052ece5a8b2ea477699e7bb232de1e1f8"
-		},
-		{
-			"ImportPath": "github.com/docker/libcontainer/netlink",
-			"Comment": "v1.4.0-20-g4940cee",
-			"Rev": "4940cee052ece5a8b2ea477699e7bb232de1e1f8"
-		},
-		{
-			"ImportPath": "github.com/docker/libcontainer/user",
-			"Comment": "v1.4.0-20-g4940cee",
-			"Rev": "4940cee052ece5a8b2ea477699e7bb232de1e1f8"
+			"ImportPath": "github.com/docker/libcontainer",
+			"Comment": "v1.4.0-410-gb89112c",
+			"Rev": "b89112c542edcc9cf5af75694c16af28a3e4f12b"
 		},
 		{
 			"ImportPath": "github.com/docker/libtrust",
@@ -386,6 +381,11 @@
 			"ImportPath": "github.com/go-martini/martini",
 			"Comment": "v0.1-151-gbbe60ba",
 			"Rev": "bbe60ba962de9b5627873af719f1c98133d43afb"
+		},
+		{
+			"ImportPath": "github.com/godbus/dbus",
+			"Comment": "v2",
+			"Rev": "88765d85c0fdadcd98a54e30694fa4e4f5b51133"
 		},
 		{
 			"ImportPath": "github.com/gorilla/context",
@@ -501,6 +501,10 @@
 		{
 			"ImportPath": "github.com/rnd42/go-jsonpointer",
 			"Rev": "0480215403db768c5bf6db30d82908043c58422c"
+		},
+		{
+			"ImportPath": "github.com/syndtr/gocapability/capability",
+			"Rev": "8e4cdcb3c22b40d5e330ade0b68cb2e2a3cf6f98"
 		},
 		{
 			"ImportPath": "github.com/tchap/go-patricia/patricia",
