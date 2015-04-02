@@ -5,9 +5,7 @@ package backend
 import (
 	"fmt"
 
-	"github.com/flynn/flynn/host/logmux"
 	"github.com/flynn/flynn/host/types"
-	"github.com/flynn/flynn/host/volume/manager"
 	"github.com/flynn/flynn/pinkerton"
 
 	lc "github.com/flynn/flynn/Godeps/_workspace/src/github.com/docker/libcontainer"
@@ -21,7 +19,7 @@ type libcontainer struct {
 	factory lc.Factory
 }
 
-func newLibcontainer(state *State, vman *volumemanager.Manager, volPath, logPath, initPath string, mux *logmux.LogMux) (Backend, error) {
+func newLibcontainer(config Config) (Backend, error) {
 	factory, err := lc.New("/var/lib/flynn")
 	if err != nil {
 		return nil, err
