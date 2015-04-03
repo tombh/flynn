@@ -11,7 +11,7 @@ usage: $0 [options]
 
 OPTIONS:
   -h            Show this message
-  -b BACKEND    The job backend to use [default: `libvirt-lxc`]
+  -b BACKEND    The job backend to use [default: \`libvirt-lxc\`]
 USAGE
 }
 
@@ -41,8 +41,8 @@ main() {
   backend=${backend:-"libvirt-lxc"}
 
   case "${backend}" in
-    libvirt-lxc)
-      kill_libvirt_lxc
+    libvirt-lxc | libcontainer)
+      kill_flynn_host
       ;;
     *)
       usage
@@ -51,10 +51,10 @@ main() {
   esac
 }
 
-kill_libvirt_lxc() {
+kill_flynn_host() {
   local flynn_host="${ROOT}/host/bin/flynn-host"
 
-  info "killing running libvirt-lxc flynn-host, if any"
+  info "killing running flynn-host, if any"
   sudo start-stop-daemon \
     --stop \
     --oknodo \

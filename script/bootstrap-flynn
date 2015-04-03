@@ -66,8 +66,8 @@ main() {
   fi
 
   case "${backend}" in
-    libvirt-lxc)
-      boot_libvirt_lxc $ip
+    libvirt-lxc | libcontainer)
+      boot $ip
       ;;
     *)
       usage
@@ -76,14 +76,14 @@ main() {
   esac
 }
 
-boot_libvirt_lxc() {
+boot() {
   local ip=$1
   local host_dir="${ROOT}/host"
   local bootstrap_dir="${ROOT}/bootstrap"
 
   local log="/tmp/flynn-host-$(date +%Y-%m-%dT%H-%M-%S.%N).log"
   ln -nfs "${log}" /tmp/flynn-host.log
-  info "starting flynn-host (libvirt-lxc backend)"
+  info "starting flynn-host (${backend} backend)"
   info "forwarding daemon output to ${log}"
   sudo start-stop-daemon \
     --start \
@@ -95,7 +95,7 @@ boot_libvirt_lxc() {
     --manifest "${host_dir}/bin/manifest.json" \
     --external ${ip} \
     --force \
-    --backend libvirt-lxc \
+    --backend "${backend}" \
     --state /tmp/flynn-host-state.bolt \
     --flynn-init "${host_dir}/bin/flynn-init" \
     &>"${log}"
