@@ -1131,3 +1131,38 @@ func (s *S) TestHTTPHijackUpgrade(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(string(pong), Equals, "pong!\n")
 }
+
+func (s *S) TestIssue1425(c *C) {
+	srv := httptest.NewServer(httpTestHandler(""))
+	defer srv.Close()
+
+	l := s.newHTTPListener(c)
+	defer l.Close()
+
+	// add a non-sticky route first
+	nonStickyRoute := router.HTTPRoute{
+		Domain:  "non-sticky-example.com",
+		Service: "example-com",
+		Sticky:  false,
+	}.ToRoute()
+
+	wait := waitForEvent(c, l, "set", "non-sticky-example.com")
+	c.Assert(l.ds.Add(nonStickyRoute), IsNil)
+	wait()
+	discoverdRegisterHTTPService(c, l, "example-com", srv.Listener.Addr().String())
+
+	// add the sticky route after registering the service
+	stickyRoute := router.HTTPRoute{
+		Domain:  "sticky-example.com",
+		Service: "example-com",
+		Sticky:  true,
+	}.ToRoute()
+
+	wait = waitForEvent(c, l, "set", "sticky-example.com")
+	c.Assert(l.ds.Add(stickyRoute), IsNil)
+	wait()
+
+	res, err := httpClient.Do(newReq("http://"+l.Addr, "sticky-example.com"))
+	c.Assert(err, IsNil)
+	c.Assert(res.Header["Set-Cookie"], Not(IsNil))
+}
