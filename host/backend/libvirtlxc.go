@@ -401,7 +401,7 @@ func (l *libvirtLXC) Run(job *host.Job, runConfig *RunConfig) (err error) {
 		return err
 	}
 
-	g.Log(grohl.Data{"at": "checkout"})
+	g.Log(grohl.Data{"at": "checkout", "imageID": imageID})
 	rootPath, err := l.pinkerton.Checkout(job.ID, imageID)
 	if err != nil {
 		g.Log(grohl.Data{"at": "checkout", "status": "error", "err": err})
@@ -409,7 +409,7 @@ func (l *libvirtLXC) Run(job *host.Job, runConfig *RunConfig) (err error) {
 	}
 	container.RootPath = rootPath
 
-	g.Log(grohl.Data{"at": "mount"})
+	g.Log(grohl.Data{"at": "mount", "path": rootPath})
 	if err := bindMount(l.InitPath, filepath.Join(rootPath, ".containerinit"), false, true); err != nil {
 		g.Log(grohl.Data{"at": "mount", "file": ".containerinit", "status": "error", "err": err})
 		return err
@@ -522,6 +522,7 @@ func (l *libvirtLXC) Run(job *host.Job, runConfig *RunConfig) (err error) {
 			config.Args = append(config.Args, imageConfig.Cmd...)
 		}
 	}
+	fmt.Printf("Args: %v\n", config.Args)
 	for _, port := range job.Config.Ports {
 		config.Ports = append(config.Ports, port)
 	}
@@ -742,6 +743,7 @@ func (c *libvirtContainer) watch(ready chan<- error) error {
 			if c.l.state.GetJob(c.job.ID).ForceStop {
 				c.Stop()
 			}
+			fmt.Printf("c.l.state %#v\n", c.l.state)
 		case containerinit.StateExited:
 			g.Log(grohl.Data{"at": "exited", "status": change.ExitStatus})
 			c.Client.Resume()
@@ -1070,6 +1072,7 @@ func (l *libvirtLXC) pinkertonPull(url string) ([]layer.PullInfo, error) {
 }
 
 func bindMount(src, dest string, writeable, private bool) error {
+	fmt.Printf("src=%s, dest=%s\n", src, dest)
 	srcStat, err := os.Stat(src)
 	if err != nil {
 		return err
