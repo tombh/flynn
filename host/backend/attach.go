@@ -1,4 +1,4 @@
-package main
+package backend
 
 import (
 	"bufio"
@@ -10,16 +10,15 @@ import (
 
 	"github.com/flynn/flynn/Godeps/_workspace/src/github.com/julienschmidt/httprouter"
 	"github.com/flynn/flynn/Godeps/_workspace/src/github.com/technoweenie/grohl"
-	"github.com/flynn/flynn/host/backend"
 	"github.com/flynn/flynn/host/types"
 )
 
-type attachHandler struct {
-	state   *backend.State
-	backend backend.Backend
+type AttachHandler struct {
+	State   *State
+	Backend Backend
 }
 
-func (h *attachHandler) ServeHTTP(w http.ResponseWriter, req *http.Request, _ httprouter.Params) {
+func (h *AttachHandler) ServeHTTP(w http.ResponseWriter, req *http.Request, _ httprouter.Params) {
 	var attachReq host.AttachReq
 	if err := json.NewDecoder(req.Body).Decode(&attachReq); err != nil {
 		http.Error(w, "invalid JSON", 400)
@@ -36,25 +35,26 @@ func (h *attachHandler) ServeHTTP(w http.ResponseWriter, req *http.Request, _ ht
 	h.attach(&attachReq, conn)
 }
 
-func (h *attachHandler) attach(req *host.AttachReq, conn io.ReadWriteCloser) {
+func (h *AttachHandler) attach(req *host.AttachReq, conn io.ReadWriteCloser) {
 	defer conn.Close()
 
 	g := grohl.NewContext(grohl.Data{"fn": "attach", "job.id": req.JobID})
 	g.Log(grohl.Data{"at": "start"})
 	attachWait := make(chan struct{})
-	job := h.state.AddAttacher(req.JobID, attachWait)
+	job := h.State.AddAttacher(req.JobID, attachWait)
 	if job == nil {
-		defer h.state.RemoveAttacher(req.JobID, attachWait)
+		defer h.State.RemoveAttacher(req.JobID, attachWait)
 		if _, err := conn.Write([]byte{host.AttachWaiting}); err != nil {
 			return
 		}
 		// TODO: add timeout
 		g.Log(grohl.Data{"at": "wait"})
 		<-attachWait
-		job = h.state.GetJob(req.JobID)
+		job = h.State.GetJob(req.JobID)
 	}
 	w := bufio.NewWriter(conn)
 	writeError := func(err string) {
+		panic(err)
 		w.WriteByte(host.AttachError)
 		binary.Write(w, binary.BigEndian, uint32(len(err)))
 		w.WriteString(err)
@@ -71,7 +71,7 @@ func (h *attachHandler) attach(req *host.AttachReq, conn io.ReadWriteCloser) {
 
 	attached := make(chan struct{})
 	failed := make(chan struct{})
-	opts := &backend.AttachRequest{
+	opts := &AttachRequest{
 		Job:      job,
 		Logs:     req.Flags&host.AttachFlagLogs != 0,
 		Stream:   req.Flags&host.AttachFlagStream != 0,
@@ -145,7 +145,7 @@ func (h *attachHandler) attach(req *host.AttachReq, conn io.ReadWriteCloser) {
 				}
 				signal := int(binary.BigEndian.Uint32(buf[:]))
 				g.Log(grohl.Data{"at": "signal", "signal": signal})
-				if err := h.backend.Signal(req.JobID, signal); err != nil {
+				if err := h.Backend.Signal(req.JobID, signal); err != nil {
 					g.Log(grohl.Data{"at": "signal", "status": "error", "err": err})
 					return
 				}
@@ -159,7 +159,7 @@ func (h *attachHandler) attach(req *host.AttachReq, conn io.ReadWriteCloser) {
 				height := binary.BigEndian.Uint16(buf[:])
 				width := binary.BigEndian.Uint16(buf[2:])
 				g.Log(grohl.Data{"at": "tty_resize", "height": height, "width": width})
-				if err := h.backend.ResizeTTY(req.JobID, height, width); err != nil {
+				if err := h.Backend.ResizeTTY(req.JobID, height, width); err != nil {
 					g.Log(grohl.Data{"at": "tty_resize", "status": "error", "err": err})
 					return
 				}
@@ -170,8 +170,8 @@ func (h *attachHandler) attach(req *host.AttachReq, conn io.ReadWriteCloser) {
 	}()
 
 	g.Log(grohl.Data{"at": "attach"})
-	if err := h.backend.Attach(opts); err != nil && err != io.EOF {
-		if exit, ok := err.(backend.ExitError); ok {
+	if err := h.Backend.Attach(opts); err != nil && err != io.EOF {
+		if exit, ok := err.(ExitError); ok {
 			writeMtx.Lock()
 			w.WriteByte(host.AttachExit)
 			binary.Write(w, binary.BigEndian, uint32(exit))

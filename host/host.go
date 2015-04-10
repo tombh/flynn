@@ -292,7 +292,7 @@ func runDaemon(args *docopt.Args) {
 
 	router, err := serveHTTP(
 		&Host{state: state, backend: backend},
-		&attachHandler{state: state, backend: backend},
+		&be.AttachHandler{State: state, Backend: backend},
 		cluster,
 		vman,
 	)

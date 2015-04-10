@@ -163,7 +163,7 @@ func (h *jobAPI) RegisterRoutes(r *httprouter.Router) error {
 	return nil
 }
 
-func serveHTTP(host *Host, attach *attachHandler, clus *cluster.Client, vman *volumemanager.Manager) (*httprouter.Router, error) {
+func serveHTTP(host *Host, attach *backend.AttachHandler, clus *cluster.Client, vman *volumemanager.Manager) (*httprouter.Router, error) {
 	l, err := net.Listen("tcp", ":1113")
 	if err != nil {
 		return nil, err
