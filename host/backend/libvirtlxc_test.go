@@ -3,12 +3,15 @@
 package backend
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	. "github.com/flynn/flynn/Godeps/_workspace/src/github.com/flynn/go-check"
 	zfs "github.com/flynn/flynn/Godeps/_workspace/src/github.com/mistifyio/go-zfs"
@@ -74,12 +77,11 @@ func (s *LibvirtLXCSuite) SetUpSuite(c *C) {
 	s.job = &host.Job{
 		ID: s.id,
 		Artifact: host.Artifact{
-			URI: "https://registry.hub.docker.com?name=busybox",
+			URI: "https://registry.hub.docker.com?name=flynn/busybox&id=184af8860f22e7a87f1416bb12a32b20d0d2c142f719653d87809a6122b04663",
 		},
 		Config: host.ContainerConfig{
 			Entrypoint:  []string{"/bin/sh", "-"},
 			HostNetwork: true,
-			TTY:         true,
 			Stdin:       true,
 		},
 	}
@@ -106,6 +108,8 @@ func (s *LibvirtLXCSuite) SetUpSuite(c *C) {
 		Job:      job,
 		Height:   80,
 		Width:    80,
+		Logs:     false,
+		Stream:   true,
 		Attached: attached,
 		Stdin:    stdinr,
 		Stdout:   stdoutw,
@@ -113,6 +117,8 @@ func (s *LibvirtLXCSuite) SetUpSuite(c *C) {
 
 	go s.backend.Attach(attachReq)
 	<-attached
+	close(attached)
+	close(attachWait)
 }
 
 func (s *LibvirtLXCSuite) TearDownSuite(c *C) {
@@ -129,42 +135,152 @@ func (s *LibvirtLXCSuite) TearDownSuite(c *C) {
 	err = zpool.Destroy()
 	c.Assert(err, IsNil)
 }
-func (s *LibvirtLXCSuite) TestLibvirtBackendContainerinit(c *C) {
-	s.tty.Write([]byte("file /.containerinit\n"))
-	buf := make([]byte, 4096)
+func (s *LibvirtLXCSuite) TestLibvirtContainerDevices(c *C) {
+	dirs := map[string]deviceSlice{
+		"/dev": deviceSlice{
+			// block devices
+			device{Name: "zero", Mode: "crw-rw-rw-", Major: 1},
+			device{Name: "null", Mode: "crw-rw-rw-", Major: 1},
+			device{Name: "full", Mode: "crw-rw-rw-", Major: 1},
+			device{Name: "random", Mode: "crw-rw-rw-", Major: 1},
+			device{Name: "urandom", Mode: "crw-rw-rw-", Major: 1},
+			// TTY devices
+			device{Name: "ptmx", Mode: "crw-rw-rw-", Major: 5},
+			device{Name: "tty", Mode: "crw-rw-rw-", Major: 5},
+			// simlinked devices
+			device{Name: "stdin", Mode: "lrwxrwxrwx", LinkTo: "/proc/self/fd/0"},
+			device{Name: "stdout", Mode: "lrwxrwxrwx", LinkTo: "/proc/self/fd/1"},
+			device{Name: "stderr", Mode: "lrwxrwxrwx", LinkTo: "/proc/self/fd/2"},
+			device{Name: "fd", Mode: "lrwxrwxrwx", LinkTo: "/proc/self/fd"},
+			device{Name: "console", Mode: "lrwxrwxrwx", LinkTo: "/dev/pts/0"},
+			device{Name: "tty1", Mode: "lrwxrwxrwx", LinkTo: "/dev/pts/0"},
+		},
+		"/dev/pts": deviceSlice{
+			device{Name: "ptmx", Mode: "crw-rw-rw-", Major: 5},
+			device{Name: "0", Mode: "crw--w----", Major: 136}, // console
+		},
+		"/proc/self/fd": deviceSlice{
+			device{Name: "0", Mode: "lr-x------", Pipe: true}, // stdin
+			device{Name: "1", Mode: "l-wx------", Pipe: true}, // stdout
+			device{Name: "2", Mode: "l-wx------", Pipe: true}, // stderr
+			device{Name: "3", Mode: "lr-x------", Pipe: true}, // containerinit-rpc sock ?
+		},
+	}
 
-	n, err := s.tty.Read(buf)
-	c.Assert(err, IsNil)
+	for dir, wants := range dirs {
+		names := map[string]bool{}
+		gots, err := listDevices(dir, s.tty)
+		c.Assert(err, IsNil)
 
-	fmt.Printf("%q\n", string(buf[:n]))
+		for _, got := range gots {
+			names[got.Name] = true
+			gotPath := filepath.Join(dir, got.Name)
+
+			want, ok := wants.get(got.Name)
+			if !ok {
+				c.Errorf("unexpected device %q", gotPath)
+				continue
+			}
+			if got.Mode != want.Mode {
+				c.Errorf("want %q mode %s, got %s", gotPath, want.Mode, got.Mode)
+			}
+			if got.Major != want.Major {
+				c.Errorf("want %q major %d, got %d", gotPath, want.Major, got.Major)
+			}
+			if got.LinkTo != want.LinkTo {
+				c.Errorf("want %q symlinked to %q, got %q", gotPath, want.LinkTo, got.LinkTo)
+			}
+		}
+
+		for _, want := range wants {
+			wantPath := filepath.Join(dir, want.Name)
+			if !names[want.Name] {
+				c.Errorf("missing device %q", wantPath)
+			}
+		}
+	}
 }
 
-/*
-func (s *LibvirtLXCSuite) TestLibvirtBackendContainerinit(c *C) {
-	c.Assert(s.container, HasFile, "/.containerinit")
-	c.Assert(s.container, HasFile, "/.containerenv")
-	c.Assert(s.container, HasFile, "/.container-shared")
+func listDevices(dir string, tty io.ReadWriter) (deviceSlice, error) {
+	devices := deviceSlice{}
+	bufr := bufio.NewReader(tty)
+
+	fmt.Fprintf(tty, "ls -l %s ; echo EOF\n", dir)
+
+	// read "total 0"
+	if _, err := bufr.ReadString('\n'); err != nil {
+		return nil, err
+	}
+
+	for {
+		line, err := bufr.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		if line[0] == 'd' {
+			// skip directories
+			continue
+		}
+		if line == "EOF\n" {
+			return devices, nil
+		}
+
+		dev, err := parseDevice(string(line))
+		if err != nil {
+			return nil, err
+		}
+		devices = append(devices, dev)
+	}
 }
 
-func (s *LibvirtLXCSuite) TestLibvirtBackendNetworking(c *C) {
-	c.Assert(s.container, HasFile, "/etc/hosts")
-	c.Assert(s.container, HasFile, "/etc/resolv.conf")
+type device struct {
+	Name   string
+	Mode   string
+	Major  int
+	LinkTo string
+	Pipe   bool
 }
 
-func (s *LibvirtLXCSuite) TestLibvirtLXCBackendDevices(c *C) {
-	c.Assert(s.container, HasDevice, "/dev/console")
+func parseDevice(line string) (device, error) {
+	var (
+		name   string
+		major  int
+		linkTo string
+		err    error
+		pipe   bool
+	)
 
-	// documented as available but not actually provided: https://libvirt.org/drvlxc.html#devnodes
-	c.Assert(s.container, Not(HasDevice), "/dev/zero")
-	c.Assert(s.container, Not(HasDevice), "/dev/null")
-	c.Assert(s.container, Not(HasDevice), "/dev/full")
-	c.Assert(s.container, Not(HasDevice), "/dev/random")
-	c.Assert(s.container, Not(HasDevice), "/dev/urandom")
-	c.Assert(s.container, Not(HasDevice), "/dev/stdin")
-	c.Assert(s.container, Not(HasDevice), "/dev/stdout")
-	c.Assert(s.container, Not(HasDevice), "/dev/fd")
-	c.Assert(s.container, Not(HasDevice), "/dev/ptmx")
+	parts := strings.Fields(line)
+	if line[0] == 'c' {
+		major, err = strconv.Atoi(strings.TrimRight(parts[4], ","))
+		name = parts[9]
+	} else {
+		name = parts[8]
+	}
 
-	time.Sleep(300 * time.Second)
+	if len(parts) >= 11 {
+		linkTo = parts[10]
+		if strings.Contains(linkTo, "pipe:[") {
+			pipe, linkTo = true, ""
+		}
+	}
+
+	return device{
+		Name:   name,
+		Mode:   parts[0],
+		Major:  major,
+		LinkTo: linkTo,
+		Pipe:   pipe,
+	}, err
 }
-*/
+
+type deviceSlice []device
+
+func (s deviceSlice) get(name string) (device, bool) {
+	for _, d := range s {
+		if d.Name == name {
+			return d, true
+		}
+	}
+	return device{}, false
+}

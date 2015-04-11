@@ -743,7 +743,6 @@ func (c *libvirtContainer) watch(ready chan<- error) error {
 			if c.l.state.GetJob(c.job.ID).ForceStop {
 				c.Stop()
 			}
-			fmt.Printf("c.l.state %#v\n", c.l.state)
 		case containerinit.StateExited:
 			g.Log(grohl.Data{"at": "exited", "status": change.ExitStatus})
 			c.Client.Resume()
