@@ -108,6 +108,7 @@ type libvirtContainer struct {
 	job      *host.Job
 	l        *libvirtLXC
 	done     chan struct{}
+	pid      uint
 	*containerinit.Client
 }
 
@@ -595,6 +596,11 @@ func (l *libvirtLXC) Run(job *host.Job, runConfig *RunConfig) (err error) {
 	}
 	g.Log(grohl.Data{"at": "get_uuid", "uuid": uuid})
 	l.state.SetContainerID(job.ID, uuid)
+
+	container.pid, err = vd.GetID()
+	if err != nil {
+		g.Log(grohl.Data{"at": "get_domain_id", "status": "error", "err": err})
+	}
 
 	domainXML, err := vd.GetXMLDesc(0)
 	if err != nil {
