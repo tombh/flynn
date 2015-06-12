@@ -25,8 +25,10 @@ type raftBackend struct {
 	stableStore *raftboltdb.BoltStore
 
 	Data struct {
-		Services     map[string]*discoverd.ServiceConfig `json:"services,omitempty"`
-		ServiceMetas map[string]*discoverd.ServiceMeta   `json:"service_metas,omitempty"`
+		Services       map[string]*discoverd.ServiceConfig `json:"services,omitempty"`
+		ServiceMetas   map[string]*discoverd.ServiceMeta   `json:"service_metas,omitempty"`
+		ServiceLeaders map[string]string                   `json:"leaders,omitempty"`
+		Instances      map[string]map[string]instanceEntry `json:"instances,omitempty"`
 	}
 
 	// The address the raft TCP port binds to.
@@ -40,6 +42,10 @@ type raftBackend struct {
 	ElectionTimeout    time.Duration
 	LeaderLeaseTimeout time.Duration
 	CommitTimeout      time.Duration
+
+	// Returns the current time.
+	// This defaults to time.Now and can be changed for mocking.
+	Now func() time.Time
 }
 
 // NewRaftBackend returns an instance of RaftBackend.
@@ -52,9 +58,12 @@ func NewRaftBackend(path, bindAddress string, advertise net.Addr) Backend {
 		ElectionTimeout:    1000 * time.Millisecond,
 		LeaderLeaseTimeout: 500 * time.Millisecond,
 		CommitTimeout:      50 * time.Millisecond,
+		Now:                time.Now,
 	}
 	b.Data.Services = make(map[string]*discoverd.ServiceConfig)
 	b.Data.ServiceMetas = make(map[string]*discoverd.ServiceMeta)
+	b.Data.ServiceLeaders = make(map[string]string)
+	b.Data.Instances = make(map[string]map[string]instanceEntry)
 	return b
 }
 
@@ -164,11 +173,69 @@ func (b *raftBackend) applyRemoveServiceCommand(cmd []byte) error {
 }
 
 func (b *raftBackend) AddInstance(service string, inst *discoverd.Instance) error {
-	panic("not yet implemented")
+	// Serialize command.
+	cmd, err := json.Marshal(&addInstanceCommand{
+		Service:  service,
+		Instance: inst,
+	})
+	if err != nil {
+		return err
+	}
+
+	return b.raftApply(addInstanceCommandType, cmd)
+}
+
+func (b *raftBackend) applyAddInstanceCommand(cmd []byte) error {
+	var c addInstanceCommand
+	if err := json.Unmarshal(cmd, &c); err != nil {
+		return err
+	}
+
+	// Verify that the service exists.
+	if b.Data.Services[c.Service] == nil {
+		return NotFoundError{Service: c.Service}
+	}
+
+	// Save the instance data.
+	if b.Data.Instances[c.Service] == nil {
+		b.Data.Instances[c.Service] = make(map[string]instanceEntry)
+	}
+	b.Data.Instances[c.Service][c.Instance.ID] = instanceEntry{
+		Instance:   c.Instance,
+		ExpiryTime: b.Now().Add(defaultTTL * time.Second),
+	}
+
+	return nil
 }
 
 func (b *raftBackend) RemoveInstance(service, id string) error {
-	panic("not yet implemented")
+	// Serialize command.
+	cmd, err := json.Marshal(&removeInstanceCommand{
+		Service: service,
+		ID:      id,
+	})
+	if err != nil {
+		return err
+	}
+
+	return b.raftApply(removeInstanceCommandType, cmd)
+}
+
+func (b *raftBackend) applyRemoveInstanceCommand(cmd []byte) error {
+	var c removeInstanceCommand
+	if err := json.Unmarshal(cmd, &c); err != nil {
+		return err
+	}
+
+	// Verify that the service exists.
+	if b.Data.Instances[c.Service] == nil {
+		return NotFoundError{Service: c.Service}
+	}
+
+	// Remove instance data.
+	delete(b.Data.Instances[c.Service], c.ID)
+
+	return nil
 }
 
 func (b *raftBackend) SetServiceMeta(service string, meta *discoverd.ServiceMeta) error {
@@ -217,8 +284,29 @@ func (b *raftBackend) applySetServiceMetaCommand(cmd []byte, index uint64) error
 	return nil
 }
 
+// SetLeader manually sets the leader for a service.
 func (b *raftBackend) SetLeader(service, id string) error {
-	panic("not yet implemented")
+	// Serialize command.
+	cmd, err := json.Marshal(&setLeaderCommand{
+		Service: service,
+		ID:      id,
+	})
+	if err != nil {
+		return err
+	}
+
+	return b.raftApply(setLeaderCommandType, cmd)
+}
+
+func (b *raftBackend) applySetLeaderCommand(cmd []byte) error {
+	var c setLeaderCommand
+	if err := json.Unmarshal(cmd, &c); err != nil {
+		return err
+	}
+
+	b.Data.ServiceLeaders[c.Service] = c.ID
+
+	return nil
 }
 
 func (b *raftBackend) Close() error {
@@ -265,6 +353,12 @@ func (b *raftBackend) Apply(l *raft.Log) interface{} {
 		return b.applyRemoveServiceCommand(cmd)
 	case setServiceMetaCommandType:
 		return b.applySetServiceMetaCommand(cmd, l.Index)
+	case setLeaderCommandType:
+		return b.applySetLeaderCommand(cmd)
+	case addInstanceCommandType:
+		return b.applyAddInstanceCommand(cmd)
+	case removeInstanceCommandType:
+		return b.applyRemoveInstanceCommand(cmd)
 	default:
 		return fmt.Errorf("invalid command type: %d", typ)
 	}
@@ -280,11 +374,20 @@ func (b *raftBackend) Restore(io.ReadCloser) error {
 	panic("not yet implemented")
 }
 
+// instanceEntry represents an instance with a TTL.
+type instanceEntry struct {
+	Instance   *discoverd.Instance
+	ExpiryTime time.Time
+}
+
 // Command type header bytes.
 const (
 	addServiceCommandType     = byte(0)
 	removeServiceCommandType  = byte(1)
 	setServiceMetaCommandType = byte(2)
+	setLeaderCommandType      = byte(3)
+	addInstanceCommandType    = byte(4)
+	removeInstanceCommandType = byte(5)
 )
 
 // addServiceCommand represents a command object to create a service.
@@ -302,4 +405,22 @@ type removeServiceCommand struct {
 type setServiceMetaCommand struct {
 	Service string
 	Meta    *discoverd.ServiceMeta
+}
+
+// setLeaderCommand represents a command object to manually assign a leader to a service.
+type setLeaderCommand struct {
+	Service string
+	ID      string
+}
+
+// addInstanceCommand represents a command object to add an instance.
+type addInstanceCommand struct {
+	Service  string
+	Instance *discoverd.Instance
+}
+
+// removeInstanceCommand represents a command object to remove an instance.
+type removeInstanceCommand struct {
+	Service string
+	ID      string
 }

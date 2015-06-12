@@ -38,14 +38,20 @@ func (s *RaftSuite) TearDownTest(c *C) {
 
 // Ensure the raft backend can add a service.
 func (s *RaftSuite) TestAddService(c *C) {
-	c.Assert(s.backend.AddService("new-service", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
-	c.Assert(s.backend.Data.Services["new-service"], DeepEquals, &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual})
+	// Add a service.
+	c.Assert(s.backend.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
+
+	// Validate that the data has been applied.
+	c.Assert(s.backend.Data.Services["service0"], DeepEquals, &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual})
 }
 
 // Ensure the raft backend can remove an existing service.
 func (s *RaftSuite) TestRemoveService(c *C) {
+	// Add and remove the service.
 	c.Assert(s.backend.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
 	c.Assert(s.backend.RemoveService("service0"), IsNil)
+
+	// Validate that the service is actually removed.
 	c.Assert(s.backend.Data.Services["service0"], IsNil)
 }
 
@@ -64,4 +70,45 @@ func (s *RaftSuite) TestSetServiceMeta(c *C) {
 	// Disallow update if index doesn't match previous.
 	c.Assert(s.backend.SetServiceMeta("service0", &discoverd.ServiceMeta{Data: []byte(`"baz"`), Index: 100}), DeepEquals, hh.PreconditionFailedErr(`Service metadata for "service0" exists, but wrong index provided`))
 	c.Assert(s.backend.Data.ServiceMetas["service0"], DeepEquals, &discoverd.ServiceMeta{Data: []byte(`"bar"`), Index: 4})
+}
+
+// Ensure the raft backend can set the leader of a service.
+func (s *RaftSuite) TestSetLeader(c *C) {
+	// Add service and set the current leader.
+	c.Assert(s.backend.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
+	c.Assert(s.backend.SetLeader("service0", "node0"), IsNil)
+
+	// Validate that the service's leader has been set.
+	c.Assert(s.backend.Data.ServiceLeaders["service0"], Equals, "node0")
+}
+
+// Ensure the raft backend can add a new instance.
+func (s *RaftSuite) TestAddInstance(c *C) {
+	// Mock the current time so we can test it.
+	now := time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
+	s.backend.Now = func() time.Time { return now }
+
+	// Add service and instance.
+	c.Assert(s.backend.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
+	c.Assert(s.backend.AddInstance("service0", &discoverd.Instance{ID: "node0", Addr: "0.0.0.0:0"}), IsNil)
+
+	// Validate that the instance map is created, contains data, and has a valid expiration.
+	c.Assert(s.backend.Data.Instances["service0"], NotNil)
+	c.Assert(s.backend.Data.Instances["service0"]["node0"], DeepEquals, instanceEntry{
+		Instance:   &discoverd.Instance{ID: "node0", Addr: "0.0.0.0:0"},
+		ExpiryTime: now.Add(10 * time.Second),
+	})
+}
+
+// Ensure the raft backend can remove an existing instance.
+func (s *RaftSuite) TestRemoveInstance(c *C) {
+	// Add service and instance. Then remove it.
+	c.Assert(s.backend.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
+	c.Assert(s.backend.AddInstance("service0", &discoverd.Instance{ID: "node0", Addr: "0.0.0.0:0"}), IsNil)
+	c.Assert(s.backend.RemoveInstance("service0", "node0"), IsNil)
+
+	// Validate that the instance has been removed.
+	c.Assert(s.backend.Data.Instances["service0"], NotNil)
+	_, ok := s.backend.Data.Instances["service0"]["node0"]
+	c.Assert(ok, Equals, false)
 }
