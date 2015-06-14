@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/flynn/flynn/discoverd/client"
@@ -18,18 +19,14 @@ import (
 
 // raftBackend represents a storage backend using the raft protocol.
 type raftBackend struct {
+	mu          sync.RWMutex
 	path        string // root store path
 	raft        *raft.Raft
 	transport   *raft.NetworkTransport
 	peerStore   raft.PeerStore
 	stableStore *raftboltdb.BoltStore
 
-	Data struct {
-		Services       map[string]*discoverd.ServiceConfig `json:"services,omitempty"`
-		ServiceMetas   map[string]*discoverd.ServiceMeta   `json:"service_metas,omitempty"`
-		ServiceLeaders map[string]string                   `json:"leaders,omitempty"`
-		Instances      map[string]map[string]instanceEntry `json:"instances,omitempty"`
-	}
+	data *raftData
 
 	// The address the raft TCP port binds to.
 	BindAddress string
@@ -50,8 +47,9 @@ type raftBackend struct {
 
 // NewRaftBackend returns an instance of RaftBackend.
 func NewRaftBackend(path, bindAddress string, advertise net.Addr) Backend {
-	b := &raftBackend{
+	return &raftBackend{
 		path:               path,
+		data:               newRaftData(),
 		BindAddress:        bindAddress,
 		Advertise:          advertise,
 		HeartbeatTimeout:   1000 * time.Millisecond,
@@ -60,15 +58,13 @@ func NewRaftBackend(path, bindAddress string, advertise net.Addr) Backend {
 		CommitTimeout:      50 * time.Millisecond,
 		Now:                time.Now,
 	}
-	b.Data.Services = make(map[string]*discoverd.ServiceConfig)
-	b.Data.ServiceMetas = make(map[string]*discoverd.ServiceMeta)
-	b.Data.ServiceLeaders = make(map[string]string)
-	b.Data.Instances = make(map[string]map[string]instanceEntry)
-	return b
 }
 
 // StartSync starts the raft server.
 func (b *raftBackend) StartSync() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	// Create raft configuration.
 	config := raft.DefaultConfig()
 	config.HeartbeatTimeout = b.HeartbeatTimeout
@@ -134,12 +130,12 @@ func (b *raftBackend) applyAddServiceCommand(cmd []byte) error {
 	}
 
 	// Verify that the service doesn't already exist.
-	if b.Data.Services[c.Service] != nil {
+	if b.data.Services[c.Service] != nil {
 		return ServiceExistsError(c.Service)
 	}
 
 	// Create new named service with configuration.
-	b.Data.Services[c.Service] = c.Config
+	b.data.Services[c.Service] = c.Config
 
 	return nil
 }
@@ -162,12 +158,12 @@ func (b *raftBackend) applyRemoveServiceCommand(cmd []byte) error {
 	}
 
 	// Verify that the service exists.
-	if b.Data.Services[c.Service] == nil {
+	if b.data.Services[c.Service] == nil {
 		return NotFoundError{Service: c.Service}
 	}
 
 	// Remove the service.
-	delete(b.Data.Services, c.Service)
+	delete(b.data.Services, c.Service)
 
 	return nil
 }
@@ -192,15 +188,15 @@ func (b *raftBackend) applyAddInstanceCommand(cmd []byte) error {
 	}
 
 	// Verify that the service exists.
-	if b.Data.Services[c.Service] == nil {
+	if b.data.Services[c.Service] == nil {
 		return NotFoundError{Service: c.Service}
 	}
 
 	// Save the instance data.
-	if b.Data.Instances[c.Service] == nil {
-		b.Data.Instances[c.Service] = make(map[string]instanceEntry)
+	if b.data.Instances[c.Service] == nil {
+		b.data.Instances[c.Service] = make(map[string]instanceEntry)
 	}
-	b.Data.Instances[c.Service][c.Instance.ID] = instanceEntry{
+	b.data.Instances[c.Service][c.Instance.ID] = instanceEntry{
 		Instance:   c.Instance,
 		ExpiryTime: b.Now().Add(defaultTTL * time.Second),
 	}
@@ -228,12 +224,12 @@ func (b *raftBackend) applyRemoveInstanceCommand(cmd []byte) error {
 	}
 
 	// Verify that the service exists.
-	if b.Data.Instances[c.Service] == nil {
+	if b.data.Instances[c.Service] == nil {
 		return NotFoundError{Service: c.Service}
 	}
 
 	// Remove instance data.
-	delete(b.Data.Instances[c.Service], c.ID)
+	delete(b.data.Instances[c.Service], c.ID)
 
 	return nil
 }
@@ -258,13 +254,13 @@ func (b *raftBackend) applySetServiceMetaCommand(cmd []byte, index uint64) error
 	}
 
 	// Verify that the service exists.
-	s := b.Data.Services[c.Service]
+	s := b.data.Services[c.Service]
 	if s == nil {
 		return NotFoundError{Service: c.Service}
 	}
 
 	// If no index is provided then the meta should not be set.
-	curr := b.Data.ServiceMetas[c.Service]
+	curr := b.data.Metas[c.Service]
 	if c.Meta.Index == 0 {
 		if curr != nil {
 			return hh.ObjectExistsErr(fmt.Sprintf("Service metadata for %q already exists, use index=n to set", c.Service))
@@ -279,7 +275,7 @@ func (b *raftBackend) applySetServiceMetaCommand(cmd []byte, index uint64) error
 
 	// Update the meta and set the index.
 	c.Meta.Index = index
-	b.Data.ServiceMetas[c.Service] = c.Meta
+	b.data.Metas[c.Service] = c.Meta
 
 	return nil
 }
@@ -304,7 +300,7 @@ func (b *raftBackend) applySetLeaderCommand(cmd []byte) error {
 		return err
 	}
 
-	b.Data.ServiceLeaders[c.Service] = c.ID
+	b.data.Leaders[c.Service] = c.ID
 
 	return nil
 }
@@ -337,6 +333,9 @@ func (b *raftBackend) raftApply(typ byte, cmd []byte) error {
 }
 
 func (b *raftBackend) Apply(l *raft.Log) interface{} {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	// Require at least a "command type" header byte.
 	if len(l.Data) == 0 {
 		return errors.New("no log data found")
@@ -366,13 +365,49 @@ func (b *raftBackend) Apply(l *raft.Log) interface{} {
 
 // Snapshot implements raft.FSM.
 func (b *raftBackend) Snapshot() (raft.FSMSnapshot, error) {
-	panic("not yet implemented")
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	buf, err := json.Marshal(b.data)
+	if err != nil {
+		return nil, err
+	}
+	return &raftSnapshot{data: buf}, nil
 }
 
 // Restore implements raft.FSM.
-func (b *raftBackend) Restore(io.ReadCloser) error {
-	panic("not yet implemented")
+func (b *raftBackend) Restore(r io.ReadCloser) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	data := &raftData{}
+	if err := json.NewDecoder(r).Decode(data); err != nil {
+		return err
+	}
+	b.data = data
+	return nil
 }
+
+// raftSnapshot implements raft.FSMSnapshot.
+// The FSM is serialized on snapshot creation so this simply writes to the sink.
+type raftSnapshot struct {
+	data []byte
+}
+
+// Persist writes the snapshot to the sink.
+func (ss *raftSnapshot) Persist(sink raft.SnapshotSink) error {
+	// Write data to sink.
+	if _, err := sink.Write(ss.data); err != nil {
+		sink.Cancel()
+		return err
+	}
+
+	// Close and exit.
+	return sink.Close()
+}
+
+// Release implements raft.FSMSnapshot. This is a no-op.
+func (ss *raftSnapshot) Release() {}
 
 // instanceEntry represents an instance with a TTL.
 type instanceEntry struct {
@@ -423,4 +458,21 @@ type addInstanceCommand struct {
 type removeInstanceCommand struct {
 	Service string
 	ID      string
+}
+
+// raftData represents the root data structure for the raft backend.
+type raftData struct {
+	Services  map[string]*discoverd.ServiceConfig `json:"services,omitempty"`
+	Metas     map[string]*discoverd.ServiceMeta   `json:"metas,omitempty"`
+	Leaders   map[string]string                   `json:"leaders,omitempty"`
+	Instances map[string]map[string]instanceEntry `json:"instances,omitempty"`
+}
+
+func newRaftData() *raftData {
+	return &raftData{
+		Services:  make(map[string]*discoverd.ServiceConfig),
+		Metas:     make(map[string]*discoverd.ServiceMeta),
+		Leaders:   make(map[string]string),
+		Instances: make(map[string]map[string]instanceEntry),
+	}
 }
