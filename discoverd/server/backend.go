@@ -17,6 +17,9 @@ import (
 	"github.com/hashicorp/raft-boltdb"
 )
 
+// DefaultTTL is the length of time after a heartbeat from an instance before it expires.
+const DefaultTTL = 10 * time.Second
+
 type Backend interface {
 	AddService(service string, config *discoverd.ServiceConfig) error
 	RemoveService(service string) error
@@ -29,8 +32,8 @@ type Backend interface {
 	Ping() error
 }
 
-// raftBackend represents a storage backend using the raft protocol.
-type raftBackend struct {
+// backend represents a storage backend using the raft protocol.
+type backend struct {
 	mu          sync.RWMutex
 	path        string // root store path
 	raft        *raft.Raft
@@ -57,9 +60,9 @@ type raftBackend struct {
 	Now func() time.Time
 }
 
-// NewRaftBackend returns an instance of RaftBackend.
-func NewRaftBackend(path, bindAddress string, advertise net.Addr) Backend {
-	return &raftBackend{
+// NewBackend returns an instance of Backend.
+func NewBackend(path, bindAddress string, advertise net.Addr) Backend {
+	return &backend{
 		path:               path,
 		data:               newRaftData(),
 		BindAddress:        bindAddress,
@@ -73,7 +76,7 @@ func NewRaftBackend(path, bindAddress string, advertise net.Addr) Backend {
 }
 
 // StartSync starts the raft server.
-func (b *raftBackend) StartSync() error {
+func (b *backend) StartSync() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -118,7 +121,7 @@ func (b *raftBackend) StartSync() error {
 
 // AddService creates a service with a configuration.
 // Returns an error if the service already exists.
-func (b *raftBackend) AddService(service string, config *discoverd.ServiceConfig) error {
+func (b *backend) AddService(service string, config *discoverd.ServiceConfig) error {
 	if config == nil {
 		config = DefaultServiceConfig
 	}
@@ -135,7 +138,7 @@ func (b *raftBackend) AddService(service string, config *discoverd.ServiceConfig
 	return b.raftApply(addServiceCommandType, cmd)
 }
 
-func (b *raftBackend) applyAddServiceCommand(cmd []byte) error {
+func (b *backend) applyAddServiceCommand(cmd []byte) error {
 	var c addServiceCommand
 	if err := json.Unmarshal(cmd, &c); err != nil {
 		return err
@@ -153,7 +156,7 @@ func (b *raftBackend) applyAddServiceCommand(cmd []byte) error {
 }
 
 // RemoveService deletes the service from the backend.
-func (b *raftBackend) RemoveService(service string) error {
+func (b *backend) RemoveService(service string) error {
 	// Serialize command.
 	cmd, err := json.Marshal(&removeServiceCommand{Service: service})
 	if err != nil {
@@ -163,7 +166,7 @@ func (b *raftBackend) RemoveService(service string) error {
 	return b.raftApply(removeServiceCommandType, cmd)
 }
 
-func (b *raftBackend) applyRemoveServiceCommand(cmd []byte) error {
+func (b *backend) applyRemoveServiceCommand(cmd []byte) error {
 	var c removeServiceCommand
 	if err := json.Unmarshal(cmd, &c); err != nil {
 		return err
@@ -180,7 +183,7 @@ func (b *raftBackend) applyRemoveServiceCommand(cmd []byte) error {
 	return nil
 }
 
-func (b *raftBackend) AddInstance(service string, inst *discoverd.Instance) error {
+func (b *backend) AddInstance(service string, inst *discoverd.Instance) error {
 	// Serialize command.
 	cmd, err := json.Marshal(&addInstanceCommand{
 		Service:  service,
@@ -193,7 +196,7 @@ func (b *raftBackend) AddInstance(service string, inst *discoverd.Instance) erro
 	return b.raftApply(addInstanceCommandType, cmd)
 }
 
-func (b *raftBackend) applyAddInstanceCommand(cmd []byte) error {
+func (b *backend) applyAddInstanceCommand(cmd []byte) error {
 	var c addInstanceCommand
 	if err := json.Unmarshal(cmd, &c); err != nil {
 		return err
@@ -210,13 +213,13 @@ func (b *raftBackend) applyAddInstanceCommand(cmd []byte) error {
 	}
 	b.data.Instances[c.Service][c.Instance.ID] = instanceEntry{
 		Instance:   c.Instance,
-		ExpiryTime: b.Now().Add(defaultTTL * time.Second),
+		ExpiryTime: b.Now().Add(DefaultTTL),
 	}
 
 	return nil
 }
 
-func (b *raftBackend) RemoveInstance(service, id string) error {
+func (b *backend) RemoveInstance(service, id string) error {
 	// Serialize command.
 	cmd, err := json.Marshal(&removeInstanceCommand{
 		Service: service,
@@ -229,7 +232,7 @@ func (b *raftBackend) RemoveInstance(service, id string) error {
 	return b.raftApply(removeInstanceCommandType, cmd)
 }
 
-func (b *raftBackend) applyRemoveInstanceCommand(cmd []byte) error {
+func (b *backend) applyRemoveInstanceCommand(cmd []byte) error {
 	var c removeInstanceCommand
 	if err := json.Unmarshal(cmd, &c); err != nil {
 		return err
@@ -246,7 +249,7 @@ func (b *raftBackend) applyRemoveInstanceCommand(cmd []byte) error {
 	return nil
 }
 
-func (b *raftBackend) SetServiceMeta(service string, meta *discoverd.ServiceMeta) error {
+func (b *backend) SetServiceMeta(service string, meta *discoverd.ServiceMeta) error {
 	// Serialize command.
 	cmd, err := json.Marshal(&setServiceMetaCommand{
 		Service: service,
@@ -259,7 +262,7 @@ func (b *raftBackend) SetServiceMeta(service string, meta *discoverd.ServiceMeta
 	return b.raftApply(setServiceMetaCommandType, cmd)
 }
 
-func (b *raftBackend) applySetServiceMetaCommand(cmd []byte, index uint64) error {
+func (b *backend) applySetServiceMetaCommand(cmd []byte, index uint64) error {
 	var c setServiceMetaCommand
 	if err := json.Unmarshal(cmd, &c); err != nil {
 		return err
@@ -293,7 +296,7 @@ func (b *raftBackend) applySetServiceMetaCommand(cmd []byte, index uint64) error
 }
 
 // SetLeader manually sets the leader for a service.
-func (b *raftBackend) SetLeader(service, id string) error {
+func (b *backend) SetLeader(service, id string) error {
 	// Serialize command.
 	cmd, err := json.Marshal(&setLeaderCommand{
 		Service: service,
@@ -306,7 +309,7 @@ func (b *raftBackend) SetLeader(service, id string) error {
 	return b.raftApply(setLeaderCommandType, cmd)
 }
 
-func (b *raftBackend) applySetLeaderCommand(cmd []byte) error {
+func (b *backend) applySetLeaderCommand(cmd []byte) error {
 	var c setLeaderCommand
 	if err := json.Unmarshal(cmd, &c); err != nil {
 		return err
@@ -317,7 +320,7 @@ func (b *raftBackend) applySetLeaderCommand(cmd []byte) error {
 	return nil
 }
 
-func (b *raftBackend) Close() error {
+func (b *backend) Close() error {
 	if b.transport != nil {
 		b.transport.Close()
 	}
@@ -329,7 +332,7 @@ func (b *raftBackend) Close() error {
 
 // raftApply joins typ and cmd and applies it to raft.
 // This call blocks until the apply completes and returns the error.
-func (b *raftBackend) raftApply(typ byte, cmd []byte) error {
+func (b *backend) raftApply(typ byte, cmd []byte) error {
 	// Join the command type and data into one message.
 	buf := append([]byte{typ}, cmd...)
 
@@ -344,7 +347,7 @@ func (b *raftBackend) raftApply(typ byte, cmd []byte) error {
 	return nil
 }
 
-func (b *raftBackend) Apply(l *raft.Log) interface{} {
+func (b *backend) Apply(l *raft.Log) interface{} {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -376,7 +379,7 @@ func (b *raftBackend) Apply(l *raft.Log) interface{} {
 }
 
 // Snapshot implements raft.FSM.
-func (b *raftBackend) Snapshot() (raft.FSMSnapshot, error) {
+func (b *backend) Snapshot() (raft.FSMSnapshot, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -388,7 +391,7 @@ func (b *raftBackend) Snapshot() (raft.FSMSnapshot, error) {
 }
 
 // Restore implements raft.FSM.
-func (b *raftBackend) Restore(r io.ReadCloser) error {
+func (b *backend) Restore(r io.ReadCloser) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -487,6 +490,34 @@ func newRaftData() *raftData {
 		Leaders:   make(map[string]string),
 		Instances: make(map[string]map[string]instanceEntry),
 	}
+}
+
+type NotFoundError struct {
+	Service  string
+	Instance string
+}
+
+func (e NotFoundError) Error() string {
+	if e.Instance == "" {
+		return fmt.Sprintf("discoverd: service %q not found", e.Service)
+	}
+	return fmt.Sprintf("discoverd: instance %s/%s not found", e.Service, e.Instance)
+}
+
+func IsNotFound(err error) bool {
+	_, ok := err.(NotFoundError)
+	return ok
+}
+
+type ServiceExistsError string
+
+func (e ServiceExistsError) Error() string {
+	return fmt.Sprintf("discoverd: service %q already exists", string(e))
+}
+
+func IsServiceExists(err error) bool {
+	_, ok := err.(ServiceExistsError)
+	return ok
 }
 
 type SyncHandler interface {

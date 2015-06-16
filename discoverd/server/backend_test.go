@@ -3,6 +3,7 @@ package server
 import (
 	"io/ioutil"
 	"net"
+	"testing"
 	"time"
 
 	. "github.com/flynn/flynn/Godeps/_workspace/src/github.com/flynn/go-check"
@@ -10,16 +11,19 @@ import (
 	hh "github.com/flynn/flynn/pkg/httphelper"
 )
 
-var _ = Suite(&RaftSuite{})
+// Hook gocheck up to the "go test" runner
+func Test(t *testing.T) { TestingT(t) }
 
-type RaftSuite struct {
-	backend *raftBackend
+var _ = Suite(&BackendSuite{})
+
+type BackendSuite struct {
+	backend *backend
 }
 
-func (s *RaftSuite) SetUpTest(c *C) {
+func (s *BackendSuite) SetUpTest(c *C) {
 	path, _ := ioutil.TempDir("", "raft-")
 	addr, _ := net.ResolveTCPAddr("tcp", "localhost:20000")
-	s.backend = NewRaftBackend(path, ":20000", addr).(*raftBackend)
+	s.backend = NewBackend(path, ":20000", addr).(*backend)
 	s.backend.HeartbeatTimeout = 50 * time.Millisecond
 	s.backend.ElectionTimeout = 50 * time.Millisecond
 	s.backend.LeaderLeaseTimeout = 50 * time.Millisecond
@@ -30,14 +34,14 @@ func (s *RaftSuite) SetUpTest(c *C) {
 	<-s.backend.raft.LeaderCh()
 }
 
-func (s *RaftSuite) TearDownTest(c *C) {
+func (s *BackendSuite) TearDownTest(c *C) {
 	if s.backend != nil {
 		s.backend.Close()
 	}
 }
 
 // Ensure the raft backend can add a service.
-func (s *RaftSuite) TestAddService(c *C) {
+func (s *BackendSuite) TestAddService(c *C) {
 	// Add a service.
 	c.Assert(s.backend.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
 
@@ -46,7 +50,7 @@ func (s *RaftSuite) TestAddService(c *C) {
 }
 
 // Ensure the raft backend can remove an existing service.
-func (s *RaftSuite) TestRemoveService(c *C) {
+func (s *BackendSuite) TestRemoveService(c *C) {
 	// Add and remove the service.
 	c.Assert(s.backend.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
 	c.Assert(s.backend.RemoveService("service0"), IsNil)
@@ -56,7 +60,7 @@ func (s *RaftSuite) TestRemoveService(c *C) {
 }
 
 // Ensure the raft backend can set service metadata.
-func (s *RaftSuite) TestSetServiceMeta(c *C) {
+func (s *BackendSuite) TestSetServiceMeta(c *C) {
 	c.Assert(s.backend.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
 
 	// Set initial meta with index=0
@@ -73,7 +77,7 @@ func (s *RaftSuite) TestSetServiceMeta(c *C) {
 }
 
 // Ensure the raft backend can set the leader of a service.
-func (s *RaftSuite) TestSetLeader(c *C) {
+func (s *BackendSuite) TestSetLeader(c *C) {
 	// Add service and set the current leader.
 	c.Assert(s.backend.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
 	c.Assert(s.backend.SetLeader("service0", "node0"), IsNil)
@@ -83,7 +87,7 @@ func (s *RaftSuite) TestSetLeader(c *C) {
 }
 
 // Ensure the raft backend can add a new instance.
-func (s *RaftSuite) TestAddInstance(c *C) {
+func (s *BackendSuite) TestAddInstance(c *C) {
 	// Mock the current time so we can test it.
 	now := time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
 	s.backend.Now = func() time.Time { return now }
@@ -101,7 +105,7 @@ func (s *RaftSuite) TestAddInstance(c *C) {
 }
 
 // Ensure the raft backend can remove an existing instance.
-func (s *RaftSuite) TestRemoveInstance(c *C) {
+func (s *BackendSuite) TestRemoveInstance(c *C) {
 	// Add service and instance. Then remove it.
 	c.Assert(s.backend.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
 	c.Assert(s.backend.AddInstance("service0", &discoverd.Instance{ID: "node0", Addr: "0.0.0.0:0"}), IsNil)

@@ -1,6 +1,8 @@
 package server
 
 import (
+	"io/ioutil"
+	"net"
 	"net/http/httptest"
 	"os"
 	"time"
@@ -24,7 +26,9 @@ func (s *HTTPSuite) SetUpTest(c *C) {
 	s.cleanup = nil
 	s.state = NewState()
 
-	s.backend = newEtcdBackend(s.state)
+	path, _ := ioutil.TempDir("", "http-")
+	addr, _ := net.ResolveTCPAddr("tcp", "localhost:20000")
+	s.backend = NewBackend(path, ":20000", addr)
 	c.Assert(s.backend.StartSync(), IsNil)
 	s.cleanup = append(s.cleanup, func() { s.backend.Close() })
 
