@@ -14,23 +14,23 @@ import (
 )
 
 type DNSSuite struct {
-	state *State
+	store *Store
 	srv   *DNSServer
 }
 
 var _ = Suite(&DNSSuite{})
 
 func (s *DNSSuite) SetUpTest(c *C) {
-	s.state = NewState()
+	s.store = NewStore()
 	s.srv = s.newServer(c, []string{"8.8.8.8", "8.8.4.4"})
-	s.state.AddService("a", DefaultServiceConfig)
+	s.store.AddService("a", DefaultServiceConfig)
 }
 
 func (s *DNSSuite) newServer(c *C, recursors []string) *DNSServer {
 	srv := &DNSServer{
 		UDPAddr:   "127.0.0.1:0",
 		TCPAddr:   "127.0.0.1:0",
-		Store:     s.state,
+		Store:     s.store,
 		Recursors: recursors,
 	}
 	c.Assert(srv.ListenAndServe(), IsNil)
@@ -388,9 +388,9 @@ func (s *DNSSuite) TestServiceLookup(c *C) {
 	for _, t := range tests {
 		if len(t.data) == 0 {
 			// nil deletes the service, so use an empty slice
-			s.state.SetService("a", DefaultServiceConfig, []*discoverd.Instance{})
+			s.store.SetService("a", DefaultServiceConfig, []*discoverd.Instance{})
 		} else {
-			s.state.SetService("a", DefaultServiceConfig, t.data)
+			s.store.SetService("a", DefaultServiceConfig, t.data)
 		}
 		client := &dns.Client{Net: t.net}
 		for q, addrs := range t.qs {

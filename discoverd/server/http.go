@@ -9,257 +9,264 @@ import (
 	"github.com/flynn/flynn/discoverd/client"
 	hh "github.com/flynn/flynn/pkg/httphelper"
 	"github.com/flynn/flynn/pkg/sse"
-	"github.com/flynn/flynn/pkg/status"
-	"github.com/flynn/flynn/pkg/stream"
 )
 
-type Datastore interface {
-	// Typically implemented by a Backend
-	AddService(service string, config *discoverd.ServiceConfig) error
-	RemoveService(service string) error
-	AddInstance(service string, inst *discoverd.Instance) error
-	RemoveInstance(service, id string) error
-	SetServiceMeta(service string, meta *discoverd.ServiceMeta) error
-	SetLeader(service, id string) error
-	Ping() error
+// StreamBufferSize is the size of the channel buffer used for event subscription.
+const StreamBufferSize = 64 // TODO: Figure out how big this buffer should be.
 
-	// Typically implemented by State
-	Get(service string) []*discoverd.Instance
-	GetConfig(service string) *discoverd.ServiceConfig
-	GetServiceMeta(service string) *discoverd.ServiceMeta
-	GetLeader(service string) *discoverd.Instance
-	Subscribe(service string, sendCurrent bool, kinds discoverd.EventKind, ch chan *discoverd.Event) stream.Stream
+// NewHandler returns a new instance of Handler.
+func NewHandler() *Handler {
+	h := &Handler{router: httprouter.New()}
+
+	h.router.PUT("/services/:service", h.servePutService)
+	h.router.DELETE("/services/:service", h.serveDeleteService)
+	h.router.GET("/services/:service", h.serveGetService)
+
+	h.router.PUT("/services/:service/meta", h.servePutServiceMeta)
+	h.router.GET("/services/:service/meta", h.serveGetServiceMeta)
+
+	h.router.PUT("/services/:service/instances/:instance_id", h.servePutInstance)
+	h.router.DELETE("/services/:service/instances/:instance_id", h.serveDeleteInstance)
+	h.router.GET("/services/:service/instances", h.serveGetInstances)
+
+	h.router.PUT("/services/:service/leader", h.servePutLeader)
+	h.router.GET("/services/:service/leader", h.serveGetLeader)
+
+	h.router.GET("/ping", h.servePing)
+
+	return h
 }
 
-type basicDatastore struct {
-	*State
-	Backend
+// Handler represents an HTTP handler for the Store.
+type Handler struct {
+	router *httprouter.Router
+	Store  *Store
 }
 
-func (d basicDatastore) Ping() error {
-	return d.Backend.Ping()
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.router.ServeHTTP(w, r)
 }
 
-func (d basicDatastore) AddService(service string, config *discoverd.ServiceConfig) error {
-	return d.Backend.AddService(service, config)
-}
-
-func (d basicDatastore) RemoveService(service string) error {
-	return d.Backend.RemoveService(service)
-}
-
-func (d basicDatastore) AddInstance(service string, inst *discoverd.Instance) error {
-	return d.Backend.AddInstance(service, inst)
-}
-
-func (d basicDatastore) RemoveInstance(service, id string) error {
-	return d.Backend.RemoveInstance(service, id)
-}
-
-func (d basicDatastore) SetServiceMeta(service string, meta *discoverd.ServiceMeta) error {
-	return d.Backend.SetServiceMeta(service, meta)
-}
-
-func (d basicDatastore) SetLeader(service, id string) error {
-	return d.Backend.SetLeader(service, id)
-}
-
-func NewBasicDatastore(state *State, backend Backend) Datastore {
-	return &basicDatastore{state, backend}
-}
-
-func NewHTTPHandler(ds Datastore) http.Handler {
-	router := httprouter.New()
-
-	api := &httpAPI{
-		Store: ds,
-	}
-
-	router.Handler("GET", status.Path, status.SimpleHandler(ds.Ping))
-
-	router.PUT("/services/:service", api.AddService)
-	router.DELETE("/services/:service", api.RemoveService)
-	router.GET("/services/:service", api.GetServiceStream)
-
-	router.PUT("/services/:service/meta", api.SetServiceMeta)
-	router.GET("/services/:service/meta", api.GetServiceMeta)
-
-	router.PUT("/services/:service/instances/:instance_id", api.AddInstance)
-	router.DELETE("/services/:service/instances/:instance_id", api.RemoveInstance)
-	router.GET("/services/:service/instances", api.GetInstances)
-
-	router.PUT("/services/:service/leader", api.SetLeader)
-	router.GET("/services/:service/leader", api.GetLeader)
-
-	router.GET("/ping", func(http.ResponseWriter, *http.Request, httprouter.Params) {})
-
-	return router
-}
-
-type httpAPI struct {
-	Store Datastore
-}
-
-func (h *httpAPI) AddService(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+// servePutService creates a service.
+func (h *Handler) servePutService(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+	// Retrieve the path parameter.
 	service := params.ByName("service")
 	if err := ValidServiceName(service); err != nil {
 		hh.ValidationError(w, "", err.Error())
 		return
 	}
 
+	// Read config from the request.
 	config := &discoverd.ServiceConfig{}
 	if err := hh.DecodeJSON(r, config); err != nil {
 		hh.Error(w, err)
 		return
 	}
 
-	if err := h.Store.AddService(service, config); err != nil {
-		if IsServiceExists(err) {
-			hh.ObjectExistsError(w, err.Error())
-		} else {
-			hh.Error(w, err)
-		}
+	// Add the service to the store.
+	if err := h.Store.AddService(service, config); IsServiceExists(err) {
+		hh.ObjectExistsError(w, err.Error())
+		return
+	} else if err != nil {
+		hh.Error(w, err)
 		return
 	}
 }
 
-func (h *httpAPI) RemoveService(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+// serveDeleteService removes a service from the store by name.
+func (h *Handler) serveDeleteService(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+	// Retrieve the path parameter.
 	service := params.ByName("service")
 	if err := ValidServiceName(service); err != nil {
 		hh.ValidationError(w, "", err.Error())
 		return
 	}
-	if err := h.Store.RemoveService(params.ByName("service")); err != nil {
-		if IsNotFound(err) {
-			hh.ObjectNotFoundError(w, err.Error())
-		} else {
-			hh.Error(w, err)
-		}
+
+	// Delete from the store.
+	if err := h.Store.RemoveService(params.ByName("service")); IsNotFound(err) {
+		hh.ObjectNotFoundError(w, err.Error())
+		return
+	} else if err != nil {
+		hh.Error(w, err)
 		return
 	}
 }
 
-func (h *httpAPI) SetServiceMeta(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+// serveGetService streams service events to the client.
+func (h *Handler) serveGetService(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		h.serveStream(w, params, discoverd.EventKindAll)
+		return
+	}
+}
+
+// serveServiceMeta sets the metadata for a service.
+func (h *Handler) servePutServiceMeta(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+	// Read the metadata from the request.
 	meta := &discoverd.ServiceMeta{}
 	if err := hh.DecodeJSON(r, meta); err != nil {
 		hh.Error(w, err)
 		return
 	}
 
-	if err := h.Store.SetServiceMeta(params.ByName("service"), meta); err != nil {
-		if IsNotFound(err) {
-			hh.ObjectNotFoundError(w, err.Error())
-		} else {
-			hh.Error(w, err)
-		}
+	// Update the meta in the store.
+	if err := h.Store.SetServiceMeta(params.ByName("service"), meta); IsNotFound(err) {
+		hh.ObjectNotFoundError(w, err.Error())
+		return
+	} else if err != nil {
+		hh.Error(w, err)
 		return
 	}
 
+	// Write meta back to response.
 	hh.JSON(w, 200, meta)
 }
 
-func (h *httpAPI) GetServiceMeta(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
-	meta := h.Store.GetServiceMeta(params.ByName("service"))
+// serveGetServiceMeta returns the metadata for a service.
+func (h *Handler) serveGetServiceMeta(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+	// Read path parameter.
+	service := params.ByName("service")
+
+	// Read meta from the store.
+	meta := h.Store.ServiceMeta(service)
 	if meta == nil {
 		hh.ObjectNotFoundError(w, "service meta not found")
 		return
 	}
+
+	// Write meta to the response.
 	hh.JSON(w, 200, meta)
 }
 
-func (h *httpAPI) AddInstance(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+// servePutInstance adds an instance to a service.
+func (h *Handler) servePutInstance(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+	// Read path parameter.
+	service := params.ByName("service")
+
+	// Read instance from request.
 	inst := &discoverd.Instance{}
 	if err := json.NewDecoder(r.Body).Decode(inst); err != nil {
 		hh.Error(w, err)
 		return
 	}
+
+	// Ensure instance is valid.
 	if err := inst.Valid(); err != nil {
 		hh.ValidationError(w, "", err.Error())
 		return
 	}
-	if err := h.Store.AddInstance(params.ByName("service"), inst); err != nil {
-		if IsNotFound(err) {
-			hh.ObjectNotFoundError(w, err.Error())
-		} else {
-			hh.Error(w, err)
-		}
+
+	// Add instance to service in the store.
+	if err := h.Store.AddInstance(service, inst); IsNotFound(err) {
+		hh.ObjectNotFoundError(w, err.Error())
+		return
+	} else {
+		hh.Error(w, err)
 		return
 	}
 }
 
-func (h *httpAPI) RemoveInstance(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
-	if err := h.Store.RemoveInstance(params.ByName("service"), params.ByName("instance_id")); err != nil {
-		if IsNotFound(err) {
-			hh.ObjectNotFoundError(w, err.Error())
-		} else {
-			hh.Error(w, err)
-		}
+// serveDeleteInstance removes an instance from the store by name.
+func (h *Handler) serveDeleteInstance(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+	// Retrieve path parameters.
+	service := params.ByName("service")
+	instanceID := params.ByName("instance_id")
+
+	// Remove instance from the store.
+	if err := h.Store.RemoveInstance(service, instanceID); IsNotFound(err) {
+		hh.ObjectNotFoundError(w, err.Error())
+		return
+	} else {
+		hh.Error(w, err)
 		return
 	}
 }
 
-func (h *httpAPI) GetInstances(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+// serveGetInstances returns a list of all instances for a service.
+func (h *Handler) serveGetInstances(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+	// If the client is requesting a stream, then handle as a stream.
 	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
-		h.handleStream(w, params, discoverd.EventKindUp|discoverd.EventKindUpdate|discoverd.EventKindDown)
+		h.serveStream(w, params, discoverd.EventKindUp|discoverd.EventKindUpdate|discoverd.EventKindDown)
 		return
 	}
 
-	instances := h.Store.Get(params.ByName("service"))
+	// Otherwise read instances from the store.
+	instances := h.Store.Instances(params.ByName("service"))
 	if instances == nil {
 		hh.ObjectNotFoundError(w, "service not found")
 		return
 	}
+
+	// Write instances to the response.
 	hh.JSON(w, 200, instances)
 }
 
-func (h *httpAPI) SetLeader(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+// servePutLeader sets the leader for a service.
+func (h *Handler) servePutLeader(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+	// Retrieve path parameters.
 	service := params.ByName("service")
-	config := h.Store.GetConfig(service)
+
+	// Check if the service allows manual leader election.
+	config := h.Store.Config(service)
 	if config == nil || config.LeaderType != discoverd.LeaderTypeManual {
 		hh.ValidationError(w, "", "service leader election type is not manual")
 		return
 	}
 
+	// Read instance from the request.
 	inst := &discoverd.Instance{}
 	if err := hh.DecodeJSON(r, inst); err != nil {
 		hh.Error(w, err)
 		return
 	}
 
+	// Manually set the leader on the service.
 	if err := h.Store.SetLeader(service, inst.ID); err != nil {
 		hh.Error(w, err)
 		return
 	}
 }
 
-func (h *httpAPI) GetLeader(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+// serveGetLeader returns the current leader for a service.
+func (h *Handler) serveGetLeader(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+	// Process as a stream if that's what the client wants.
 	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
-		h.handleStream(w, params, discoverd.EventKindLeader)
+		h.serveStream(w, params, discoverd.EventKindLeader)
 		return
 	}
 
-	leader := h.Store.GetLeader(params.ByName("service"))
+	// Otherwise retrieve the current leader.
+	service := params.ByName("service")
+	leader := h.Store.Leader(service)
 	if leader == nil {
 		hh.ObjectNotFoundError(w, "no leader found")
 		return
 	}
+
+	// Write leader to the response.
 	hh.JSON(w, 200, leader)
 }
 
-func (h *httpAPI) GetServiceStream(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
-	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
-		h.handleStream(w, params, discoverd.EventKindAll)
-		return
-	}
+// servePing returns a 200 OK.
+func (h *Handler) servePing(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 }
 
-func (h *httpAPI) handleStream(w http.ResponseWriter, params httprouter.Params, kind discoverd.EventKind) {
-	ch := make(chan *discoverd.Event, 64) // TODO: figure out how big this buffer should be
-	stream := h.Store.Subscribe(params.ByName("service"), true, kind, ch)
+// serveStream creates a subscription and streams out events in SSE format.
+func (h *Handler) serveStream(w http.ResponseWriter, params httprouter.Params, kind discoverd.EventKind) {
+	// Create a buffered channel to receive events.
+	ch := make(chan *discoverd.Event, StreamBufferSize)
+
+	// Subscribe to events on the store.
+	service := params.ByName("service")
+	stream := h.Store.Subscribe(service, true, kind, ch)
+
+	// Create and serve an SSE stream.
 	s := sse.NewStream(w, ch, nil)
 	s.Serve()
 	s.Wait()
 	stream.Close()
+
+	// Check if there was an error while closing.
 	if err := stream.Err(); err != nil {
 		s.CloseWithError(err)
 	}

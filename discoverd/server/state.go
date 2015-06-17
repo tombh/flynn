@@ -1,58 +1,14 @@
 package server
 
+/*
 import (
 	"container/list"
 	"errors"
 	"sort"
-	"sync"
 
 	"github.com/flynn/flynn/discoverd/client"
 	"github.com/flynn/flynn/pkg/stream"
 )
-
-var ErrUnsetService = errors.New("discoverd: service name must not be empty")
-var ErrInvalidService = errors.New("discoverd: service must be lowercase alphanumeric plus dash")
-
-var DefaultServiceConfig = &discoverd.ServiceConfig{
-	LeaderType: discoverd.LeaderTypeOldest,
-}
-
-func ValidServiceName(service string) error {
-	if service == "" {
-		return ErrUnsetService
-	}
-	for _, r := range service {
-		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
-			return ErrInvalidService
-		}
-	}
-	return nil
-}
-
-func NewState() *State {
-	return &State{
-		services:    make(map[string]*service),
-		subscribers: make(map[string]*list.List),
-	}
-}
-
-type State struct {
-	// service name -> service
-	services map[string]*service
-	// TODO: change to atomic.Value and CoW for the services map, and a RWMutex
-	// for each service map
-	mtx sync.RWMutex
-
-	// service name -> list of *subscriber
-	subscribers    map[string]*list.List
-	subscribersMtx sync.Mutex
-}
-
-func newService() *service {
-	return &service{
-		instances: make(map[string]*discoverd.Instance),
-	}
-}
 
 type service struct {
 	// instance ID -> instance
@@ -565,3 +521,4 @@ type sortInstances []*discoverd.Instance
 func (p sortInstances) Len() int           { return len(p) }
 func (p sortInstances) Less(i, j int) bool { return p[i].Index < p[j].Index }
 func (p sortInstances) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
+*/

@@ -15,8 +15,7 @@ import (
 var _ = Suite(&HTTPSuite{})
 
 type HTTPSuite struct {
-	state   *State
-	backend Backend
+	store   *Store
 	cleanup []func()
 	server  *httptest.Server
 	client  *discoverd.Client
@@ -24,7 +23,7 @@ type HTTPSuite struct {
 
 func (s *HTTPSuite) SetUpTest(c *C) {
 	s.cleanup = nil
-	s.state = NewState()
+	s.store = NewStore()
 
 	path, _ := ioutil.TempDir("", "http-")
 	addr, _ := net.ResolveTCPAddr("tcp", "localhost:20000")
@@ -32,7 +31,10 @@ func (s *HTTPSuite) SetUpTest(c *C) {
 	c.Assert(s.backend.StartSync(), IsNil)
 	s.cleanup = append(s.cleanup, func() { s.backend.Close() })
 
-	s.server = httptest.NewServer(NewHTTPHandler(NewBasicDatastore(s.state, s.backend)))
+	h := NewHandler()
+	h.Store = s.store
+
+	s.server = httptest.NewServer(h)
 	s.cleanup = append(s.cleanup, s.server.Close)
 
 	s.client = discoverd.NewClientWithURL(s.server.URL)
