@@ -14,23 +14,25 @@ import (
 )
 
 type DNSSuite struct {
-	store *Store
 	srv   *DNSServer
+	store DNSServerStore
 }
 
 var _ = Suite(&DNSSuite{})
 
 func (s *DNSSuite) SetUpTest(c *C) {
-	s.store = NewStore()
 	s.srv = s.newServer(c, []string{"8.8.8.8", "8.8.4.4"})
-	s.store.AddService("a", DefaultServiceConfig)
+	s.srv.Store = &s.store
+	s.store.InstancesFn = func(service string) []*discoverd.Instance { return nil }
+	s.store.LeaderFn = func(service string) *discoverd.Instance { return nil }
+	// s.store.AddService("a", DefaultServiceConfig)
 }
 
 func (s *DNSSuite) newServer(c *C, recursors []string) *DNSServer {
 	srv := &DNSServer{
 		UDPAddr:   "127.0.0.1:0",
 		TCPAddr:   "127.0.0.1:0",
-		Store:     s.store,
+		Store:     &s.store,
 		Recursors: recursors,
 	}
 	c.Assert(srv.ListenAndServe(), IsNil)
@@ -386,12 +388,18 @@ func (s *DNSSuite) TestServiceLookup(c *C) {
 	}
 
 	for _, t := range tests {
-		if len(t.data) == 0 {
-			// nil deletes the service, so use an empty slice
-			s.store.SetService("a", DefaultServiceConfig, []*discoverd.Instance{})
-		} else {
-			s.store.SetService("a", DefaultServiceConfig, t.data)
+		// Mock the call to Instances to return t.data.
+		s.store.InstancesFn = func(service string) []*discoverd.Instance {
+			if service == "a" {
+				if len(t.data) == 0 {
+					return []*discoverd.Instance{}
+				} else {
+					return t.data
+				}
+			}
+			return nil
 		}
+
 		client := &dns.Client{Net: t.net}
 		for q, addrs := range t.qs {
 			c.Logf("+ %s: %s - %s - %s", t.domain, t.net, t.name, dns.TypeToString[q])
@@ -583,4 +591,18 @@ type testAddr struct {
 	IP   net.IP
 	Port uint16
 	ID   string
+}
+
+// DNSServerStore represents a mock implementation of DNSServer.Store.
+type DNSServerStore struct {
+	InstancesFn func(service string) []*discoverd.Instance
+	LeaderFn    func(service string) *discoverd.Instance
+}
+
+func (s *DNSServerStore) Instances(service string) []*discoverd.Instance {
+	return s.InstancesFn(service)
+}
+
+func (s *DNSServerStore) Leader(service string) *discoverd.Instance {
+	return s.LeaderFn(service)
 }

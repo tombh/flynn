@@ -12,17 +12,16 @@ import (
 	"github.com/flynn/flynn/pkg/random"
 )
 
-type DNSStore interface {
-	Get(string) []*discoverd.Instance
-	GetLeader(string) *discoverd.Instance
-}
-
 type DNSServer struct {
 	UDPAddr   string
 	TCPAddr   string
-	Store     DNSStore
 	Domain    string
 	Recursors []string
+
+	Store interface {
+		Instances(service string) []*discoverd.Instance
+		Leader(service string) *discoverd.Instance
+	}
 
 	servers []*dns.Server
 }
@@ -208,7 +207,7 @@ func (d dnsAPI) ServiceLookup(w dns.ResponseWriter, req *dns.Msg) {
 
 	var instances []*discoverd.Instance
 	if !leader {
-		instances = d.Store.Get(service)
+		instances = d.Store.Instances(service)
 		if instances == nil {
 			nxdomain()
 			return
@@ -219,7 +218,7 @@ func (d dnsAPI) ServiceLookup(w dns.ResponseWriter, req *dns.Msg) {
 		// we're doing a lookup for a single instance
 		var resInst *discoverd.Instance
 		if leader {
-			resInst = d.Store.GetLeader(service)
+			resInst = d.Store.Leader(service)
 		} else {
 			for _, inst := range instances {
 				if inst.ID == instanceID {

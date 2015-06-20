@@ -33,6 +33,10 @@ var (
 	ErrInvalidService = errors.New("discoverd: service must be lowercase alphanumeric plus dash")
 
 	ErrSendBlocked = errors.New("discoverd: channel send failed due to blocked receiver")
+
+	ErrBindAddressRequired = errors.New("discoverd: bind address required")
+
+	ErrAdvertiseRequired = errors.New("discoverd: advertised address required")
 )
 
 // Store represents a storage backend using the raft protocol.
@@ -65,12 +69,10 @@ type Store struct {
 }
 
 // NewStore returns an instance of Store.
-func NewStore(path, bindAddress string, advertise net.Addr) *Store {
+func NewStore(path string) *Store {
 	return &Store{
 		path:               path,
 		data:               newRaftData(),
-		BindAddress:        bindAddress,
-		Advertise:          advertise,
 		HeartbeatTimeout:   1000 * time.Millisecond,
 		ElectionTimeout:    1000 * time.Millisecond,
 		LeaderLeaseTimeout: 500 * time.Millisecond,
@@ -79,10 +81,17 @@ func NewStore(path, bindAddress string, advertise net.Addr) *Store {
 	}
 }
 
-// StartSync starts the raft server.
-func (s *Store) StartSync() error {
+// Open starts the raft consensus and opens the store.
+func (s *Store) Open() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Require bind address & advertise address.
+	if s.BindAddress == "" {
+		return ErrBindAddressRequired
+	} else if s.Advertise == nil {
+		return ErrAdvertiseRequired
+	}
 
 	// Create raft configuration.
 	config := raft.DefaultConfig()

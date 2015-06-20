@@ -9,6 +9,7 @@ import (
 	"github.com/flynn/flynn/discoverd/client"
 	hh "github.com/flynn/flynn/pkg/httphelper"
 	"github.com/flynn/flynn/pkg/sse"
+	"github.com/flynn/flynn/pkg/stream"
 )
 
 // StreamBufferSize is the size of the channel buffer used for event subscription.
@@ -40,9 +41,22 @@ func NewHandler() *Handler {
 // Handler represents an HTTP handler for the Store.
 type Handler struct {
 	router *httprouter.Router
-	Store  *Store
+	Store  interface {
+		AddService(service string, config *discoverd.ServiceConfig) error
+		RemoveService(service string) error
+		SetServiceMeta(service string, meta *discoverd.ServiceMeta) error
+		ServiceMeta(service string) *discoverd.ServiceMeta
+		AddInstance(service string, inst *discoverd.Instance) error
+		RemoveInstance(service, id string) error
+		Instances(service string) []*discoverd.Instance
+		Config(service string) *discoverd.ServiceConfig
+		SetLeader(service, id string) error
+		Leader(service string) *discoverd.Instance
+		Subscribe(service string, sendCurrent bool, kinds discoverd.EventKind, ch chan *discoverd.Event) stream.Stream
+	}
 }
 
+// ServeHTTP handles HTTP requests and responds to the response writer.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.router.ServeHTTP(w, r)
 }
@@ -160,7 +174,7 @@ func (h *Handler) servePutInstance(w http.ResponseWriter, r *http.Request, param
 	if err := h.Store.AddInstance(service, inst); IsNotFound(err) {
 		hh.ObjectNotFoundError(w, err.Error())
 		return
-	} else {
+	} else if err != nil {
 		hh.Error(w, err)
 		return
 	}
@@ -176,7 +190,7 @@ func (h *Handler) serveDeleteInstance(w http.ResponseWriter, r *http.Request, pa
 	if err := h.Store.RemoveInstance(service, instanceID); IsNotFound(err) {
 		hh.ObjectNotFoundError(w, err.Error())
 		return
-	} else {
+	} else if err != nil {
 		hh.Error(w, err)
 		return
 	}

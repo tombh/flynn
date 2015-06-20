@@ -1,14 +1,19 @@
 package server
 
 import (
+	"crypto/md5"
+	"encoding/hex"
+	"fmt"
 	"io/ioutil"
 	"net"
+	"reflect"
 	"testing"
 	"time"
 
 	. "github.com/flynn/flynn/Godeps/_workspace/src/github.com/flynn/go-check"
 	"github.com/flynn/flynn/discoverd/client"
 	hh "github.com/flynn/flynn/pkg/httphelper"
+	"github.com/flynn/flynn/pkg/random"
 )
 
 // Hook gocheck up to the "go test" runner
@@ -22,13 +27,14 @@ type StoreSuite struct {
 
 func (s *StoreSuite) SetUpTest(c *C) {
 	path, _ := ioutil.TempDir("", "raft-")
-	addr, _ := net.ResolveTCPAddr("tcp", "localhost:20000")
-	s.store = NewStore(path, ":20000", addr)
+	s.store = NewStore(path)
+	s.store.BindAddress = ":20000"
+	s.store.Advertise, _ = net.ResolveTCPAddr("tcp", "localhost:20000")
 	s.store.HeartbeatTimeout = 50 * time.Millisecond
 	s.store.ElectionTimeout = 50 * time.Millisecond
 	s.store.LeaderLeaseTimeout = 50 * time.Millisecond
 	s.store.CommitTimeout = 5 * time.Millisecond
-	c.Assert(s.store.StartSync(), IsNil)
+	c.Assert(s.store.Open(), IsNil)
 
 	// Wait for leadership.
 	<-s.store.raft.LeaderCh()
@@ -115,4 +121,127 @@ func (s *StoreSuite) TestRemoveInstance(c *C) {
 	c.Assert(s.store.data.Instances["service0"], NotNil)
 	_, ok := s.store.data.Instances["service0"]["node0"]
 	c.Assert(ok, Equals, false)
+}
+
+func fakeInstance() *discoverd.Instance {
+	octet := func() int { return random.Math.Intn(255) + 1 }
+	inst := &discoverd.Instance{
+		Addr:  fmt.Sprintf("%d.%d.%d.%d:%d", octet(), octet(), octet(), octet(), random.Math.Intn(65535)+1),
+		Proto: "tcp",
+		Meta:  map[string]string{"foo": "bar"},
+	}
+	inst.ID = md5sum(inst.Proto + "-" + inst.Addr)
+	return inst
+}
+
+func assertHasInstance(c *C, list []*discoverd.Instance, want ...*discoverd.Instance) {
+	for _, want := range want {
+		for _, have := range list {
+			if reflect.DeepEqual(have, want) {
+				return
+			}
+		}
+		c.Fatalf("couldn't find %#v in %#v", want, list)
+	}
+}
+
+func assertNoEvent(c *C, events chan *discoverd.Event) {
+	select {
+	case e, ok := <-events:
+		if !ok {
+			c.Fatal("channel closed")
+		}
+		c.Fatalf("unexpected event %v %#v", e, e.Instance)
+	default:
+	}
+}
+
+func assertEvent(c *C, events chan *discoverd.Event, service string, kind discoverd.EventKind, instance *discoverd.Instance) {
+	var event *discoverd.Event
+	var ok bool
+	select {
+	case event, ok = <-events:
+		if !ok {
+			c.Fatal("channel closed")
+		}
+	case <-time.After(10 * time.Second):
+		c.Fatalf("timed out waiting for %s %#v", kind, instance)
+	}
+
+	assertEventEqual(c, event, &discoverd.Event{
+		Service:  service,
+		Kind:     kind,
+		Instance: instance,
+	})
+}
+
+func assertMetaEvent(c *C, events chan *discoverd.Event, service string, meta *discoverd.ServiceMeta) {
+	var event *discoverd.Event
+	var ok bool
+	select {
+	case event, ok = <-events:
+		if !ok {
+			c.Fatal("channel closed")
+		}
+	case <-time.After(10 * time.Second):
+		c.Fatalf("timed out waiting for meta event %s", string(meta.Data))
+	}
+
+	assertEventEqual(c, event, &discoverd.Event{
+		Service:     service,
+		Kind:        discoverd.EventKindServiceMeta,
+		ServiceMeta: meta,
+	})
+}
+
+func assertEventEqual(c *C, actual, expected *discoverd.Event) {
+	c.Assert(actual.Service, Equals, expected.Service)
+	c.Assert(actual.Kind, Equals, expected.Kind)
+	if expected.Kind == discoverd.EventKindServiceMeta {
+		c.Assert(actual.ServiceMeta.Data, DeepEquals, expected.ServiceMeta.Data)
+	}
+	if expected.Instance == nil {
+		c.Assert(actual.Instance, IsNil)
+		return
+	}
+	c.Assert(actual.ServiceMeta, IsNil)
+	c.Assert(actual.Instance, NotNil)
+	assertInstanceEqual(c, actual.Instance, expected.Instance)
+}
+
+func assertInstanceEqual(c *C, actual, expected *discoverd.Instance) {
+	// zero out the index for comparison purposes
+	eInst := *expected
+	eInst.Index = 0
+	aInst := *actual
+	aInst.Index = 0
+	// initialize internal cache fields
+	eInst.Host()
+	aInst.Host()
+	c.Assert(aInst, DeepEquals, eInst)
+}
+
+func receiveEvents(c *C, events chan *discoverd.Event, count int) map[string][]*discoverd.Event {
+	res := receiveSomeEvents(c, events, count)
+	assertNoEvent(c, events)
+	return res
+}
+
+func receiveSomeEvents(c *C, events chan *discoverd.Event, count int) map[string][]*discoverd.Event {
+	res := make(map[string][]*discoverd.Event, count)
+	for i := 0; i < count; i++ {
+		select {
+		case e := <-events:
+			c.Logf("+ event %s", e)
+			res[e.Instance.ID] = append(res[e.Instance.ID], e)
+		case <-time.After(10 * time.Second):
+			c.Fatalf("expected %d events, got %d", count, len(res))
+		}
+	}
+	return res
+}
+
+func md5sum(data string) string {
+	digest := md5.Sum([]byte(data))
+	return hex.EncodeToString(digest[:])
 }
