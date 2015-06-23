@@ -1,247 +1,619 @@
-package server
+package server_test
 
 import (
-	"crypto/md5"
-	"encoding/hex"
-	"fmt"
 	"io/ioutil"
 	"net"
+	"os"
 	"reflect"
 	"testing"
 	"time"
 
-	. "github.com/flynn/flynn/Godeps/_workspace/src/github.com/flynn/go-check"
 	"github.com/flynn/flynn/discoverd/client"
-	hh "github.com/flynn/flynn/pkg/httphelper"
-	"github.com/flynn/flynn/pkg/random"
+	"github.com/flynn/flynn/discoverd/server"
+	"github.com/flynn/flynn/pkg/stream"
 )
 
-// Hook gocheck up to the "go test" runner
-func Test(t *testing.T) { TestingT(t) }
-
-var _ = Suite(&StoreSuite{})
-
-type StoreSuite struct {
-	store *Store
-}
-
-func (s *StoreSuite) SetUpTest(c *C) {
-	path, _ := ioutil.TempDir("", "raft-")
-	s.store = NewStore(path)
-	s.store.BindAddress = ":20000"
-	s.store.Advertise, _ = net.ResolveTCPAddr("tcp", "localhost:20000")
-	s.store.HeartbeatTimeout = 50 * time.Millisecond
-	s.store.ElectionTimeout = 50 * time.Millisecond
-	s.store.LeaderLeaseTimeout = 50 * time.Millisecond
-	s.store.CommitTimeout = 5 * time.Millisecond
-	c.Assert(s.store.Open(), IsNil)
-
-	// Wait for leadership.
-	<-s.store.raft.LeaderCh()
-}
-
-func (s *StoreSuite) TearDownTest(c *C) {
-	if s.store != nil {
-		s.store.Close()
+// Ensure the store can open and close.
+func TestStore_Open(t *testing.T) {
+	s := NewStore()
+	if err := s.Open(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// Ensure the raft store can add a service.
-func (s *StoreSuite) TestAddService(c *C) {
+// Ensure the store returns an error when opening without a bind address.
+func TestStore_Open_ErrBindAddressRequired(t *testing.T) {
+	s := NewStore()
+	s.BindAddress = ""
+	if err := s.Open(); err != server.ErrBindAddressRequired {
+		t.Fatal(err)
+	}
+}
+
+// Ensure the store returns an error when opening without an advertised address.
+func TestStore_Open_ErrAdvertiseRequired(t *testing.T) {
+	s := NewStore()
+	s.Advertise = nil
+	if err := s.Open(); err != server.ErrAdvertiseRequired {
+		t.Fatal(err)
+	}
+}
+
+// Ensure the store can add a service.
+func TestStore_AddService(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+
 	// Add a service.
-	c.Assert(s.store.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
+	if err := s.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Validate that the data has been applied.
-	c.Assert(s.store.data.Services["service0"], DeepEquals, &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual})
-}
-
-// Ensure the raft store can remove an existing service.
-func (s *StoreSuite) TestRemoveService(c *C) {
-	// Add and remove the service.
-	c.Assert(s.store.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
-	c.Assert(s.store.RemoveService("service0"), IsNil)
-
-	// Validate that the service is actually removed.
-	c.Assert(s.store.data.Services["service0"], IsNil)
-}
-
-// Ensure the raft store can set service metadata.
-func (s *StoreSuite) TestSetServiceMeta(c *C) {
-	c.Assert(s.store.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
-
-	// Set initial meta with index=0
-	c.Assert(s.store.SetServiceMeta("service0", &discoverd.ServiceMeta{Data: []byte(`"foo"`), Index: 0}), IsNil)
-	c.Assert(s.store.data.Metas["service0"], DeepEquals, &discoverd.ServiceMeta{Data: []byte(`"foo"`), Index: 3})
-
-	// Update meta using current index.
-	c.Assert(s.store.SetServiceMeta("service0", &discoverd.ServiceMeta{Data: []byte(`"bar"`), Index: 3}), IsNil)
-	c.Assert(s.store.data.Metas["service0"], DeepEquals, &discoverd.ServiceMeta{Data: []byte(`"bar"`), Index: 4})
-
-	// Disallow update if index doesn't match previous.
-	c.Assert(s.store.SetServiceMeta("service0", &discoverd.ServiceMeta{Data: []byte(`"baz"`), Index: 100}), DeepEquals, hh.PreconditionFailedErr(`Service metadata for "service0" exists, but wrong index provided`))
-	c.Assert(s.store.data.Metas["service0"], DeepEquals, &discoverd.ServiceMeta{Data: []byte(`"bar"`), Index: 4})
-}
-
-// Ensure the raft store can set the leader of a service.
-func (s *StoreSuite) TestSetLeader(c *C) {
-	// Add service and set the current leader.
-	c.Assert(s.store.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
-	c.Assert(s.store.SetLeader("service0", "node0"), IsNil)
-
-	// Validate that the service's leader has been set.
-	c.Assert(s.store.data.Leaders["service0"], Equals, "node0")
-}
-
-// Ensure the raft store can add a new instance.
-func (s *StoreSuite) TestAddInstance(c *C) {
-	// Mock the current time so we can test it.
-	now := time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
-	s.store.Now = func() time.Time { return now }
-
-	// Add service and instance.
-	c.Assert(s.store.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
-	c.Assert(s.store.AddInstance("service0", &discoverd.Instance{ID: "node0", Addr: "0.0.0.0:0"}), IsNil)
-
-	// Validate that the instance map is created, contains data, and has a valid expiration.
-	c.Assert(s.store.data.Instances["service0"], NotNil)
-	c.Assert(s.store.data.Instances["service0"]["node0"], DeepEquals, instanceEntry{
-		Instance:   &discoverd.Instance{ID: "node0", Addr: "0.0.0.0:0"},
-		ExpiryTime: now.Add(10 * time.Second),
-	})
-}
-
-// Ensure the raft store can remove an existing instance.
-func (s *StoreSuite) TestRemoveInstance(c *C) {
-	// Add service and instance. Then remove it.
-	c.Assert(s.store.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}), IsNil)
-	c.Assert(s.store.AddInstance("service0", &discoverd.Instance{ID: "node0", Addr: "0.0.0.0:0"}), IsNil)
-	c.Assert(s.store.RemoveInstance("service0", "node0"), IsNil)
-
-	// Validate that the instance has been removed.
-	c.Assert(s.store.data.Instances["service0"], NotNil)
-	_, ok := s.store.data.Instances["service0"]["node0"]
-	c.Assert(ok, Equals, false)
-}
-
-func fakeInstance() *discoverd.Instance {
-	octet := func() int { return random.Math.Intn(255) + 1 }
-	inst := &discoverd.Instance{
-		Addr:  fmt.Sprintf("%d.%d.%d.%d:%d", octet(), octet(), octet(), octet(), random.Math.Intn(65535)+1),
-		Proto: "tcp",
-		Meta:  map[string]string{"foo": "bar"},
-	}
-	inst.ID = md5sum(inst.Proto + "-" + inst.Addr)
-	return inst
-}
-
-func assertHasInstance(c *C, list []*discoverd.Instance, want ...*discoverd.Instance) {
-	for _, want := range want {
-		for _, have := range list {
-			if reflect.DeepEqual(have, want) {
-				return
-			}
-		}
-		c.Fatalf("couldn't find %#v in %#v", want, list)
+	if c := s.Config("service0"); !reflect.DeepEqual(c, &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}) {
+		t.Fatalf("unexpected config: %#v", c)
 	}
 }
 
-func assertNoEvent(c *C, events chan *discoverd.Event) {
-	select {
-	case e, ok := <-events:
-		if !ok {
-			c.Fatal("channel closed")
-		}
-		c.Fatalf("unexpected event %v %#v", e, e.Instance)
-	default:
+// Ensure the store uses a default config if one is not specified.
+func TestStore_AddService_DefaultConfig(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+
+	// Add a service.
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Validate that the data has been applied.
+	if c := s.Config("service0"); !reflect.DeepEqual(c, &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeOldest}) {
+		t.Fatalf("unexpected config: %#v", c)
 	}
 }
 
-func assertEvent(c *C, events chan *discoverd.Event, service string, kind discoverd.EventKind, instance *discoverd.Instance) {
-	var event *discoverd.Event
-	var ok bool
-	select {
-	case event, ok = <-events:
-		if !ok {
-			c.Fatal("channel closed")
-		}
-	case <-time.After(10 * time.Second):
-		c.Fatalf("timed out waiting for %s %#v", kind, instance)
+// Ensure the store returns an error when creating a service that already exists.
+func TestStore_AddService_ErrServiceExists(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+
+	// Add a service twice.
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddService("service0", nil); !server.IsServiceExists(err) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Ensure the store can remove an existing service.
+func TestStore_RemoveService(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+
+	// Add services.
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	} else if err = s.AddService("service1", nil); err != nil {
+		t.Fatal(err)
+	} else if err = s.AddService("service2", nil); err != nil {
+		t.Fatal(err)
 	}
 
-	assertEventEqual(c, event, &discoverd.Event{
-		Service:  service,
-		Kind:     kind,
-		Instance: instance,
-	})
-}
-
-func assertMetaEvent(c *C, events chan *discoverd.Event, service string, meta *discoverd.ServiceMeta) {
-	var event *discoverd.Event
-	var ok bool
-	select {
-	case event, ok = <-events:
-		if !ok {
-			c.Fatal("channel closed")
-		}
-	case <-time.After(10 * time.Second):
-		c.Fatalf("timed out waiting for meta event %s", string(meta.Data))
+	// Remove one service.
+	if err := s.RemoveService("service1"); err != nil {
+		t.Fatal(err)
 	}
 
-	assertEventEqual(c, event, &discoverd.Event{
-		Service:     service,
-		Kind:        discoverd.EventKindServiceMeta,
-		ServiceMeta: meta,
-	})
-}
-
-func assertEventEqual(c *C, actual, expected *discoverd.Event) {
-	c.Assert(actual.Service, Equals, expected.Service)
-	c.Assert(actual.Kind, Equals, expected.Kind)
-	if expected.Kind == discoverd.EventKindServiceMeta {
-		c.Assert(actual.ServiceMeta.Data, DeepEquals, expected.ServiceMeta.Data)
+	// Validate that only two services remain.
+	if a := s.ServiceNames(); !reflect.DeepEqual(a, []string{"service0", "service2"}) {
+		t.Fatalf("unexpected services: %+v", a)
 	}
-	if expected.Instance == nil {
-		c.Assert(actual.Instance, IsNil)
-		return
+}
+
+// Ensure the store sends down events when removing a service.
+func TestStore_RemoveService_Events(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	} else if err = s.AddInstance("service0", &discoverd.Instance{ID: "inst0"}); err != nil {
+		t.Fatal(err)
+	} else if err = s.AddInstance("service0", &discoverd.Instance{ID: "inst1"}); err != nil {
+		t.Fatal(err)
 	}
-	c.Assert(actual.ServiceMeta, IsNil)
-	c.Assert(actual.Instance, NotNil)
-	assertInstanceEqual(c, actual.Instance, expected.Instance)
-}
 
-func assertInstanceEqual(c *C, actual, expected *discoverd.Instance) {
-	// zero out the index for comparison purposes
-	eInst := *expected
-	eInst.Index = 0
-	aInst := *actual
-	aInst.Index = 0
-	// initialize internal cache fields
-	eInst.Host()
-	aInst.Host()
-	c.Assert(aInst, DeepEquals, eInst)
-}
+	// Add subscription.
+	ch := make(chan *discoverd.Event, 2)
+	s.Subscribe("service0", false, discoverd.EventKindDown, ch)
 
-func receiveEvents(c *C, events chan *discoverd.Event, count int) map[string][]*discoverd.Event {
-	res := receiveSomeEvents(c, events, count)
-	assertNoEvent(c, events)
-	return res
-}
-
-func receiveSomeEvents(c *C, events chan *discoverd.Event, count int) map[string][]*discoverd.Event {
-	res := make(map[string][]*discoverd.Event, count)
-	for i := 0; i < count; i++ {
-		select {
-		case e := <-events:
-			c.Logf("+ event %s", e)
-			res[e.Instance.ID] = append(res[e.Instance.ID], e)
-		case <-time.After(10 * time.Second):
-			c.Fatalf("expected %d events, got %d", count, len(res))
-		}
+	// Remove service.
+	if err := s.RemoveService("service0"); err != nil {
+		t.Fatal(err)
 	}
-	return res
+
+	// Verify two down events were received.
+	if e := <-ch; !reflect.DeepEqual(e, &discoverd.Event{Service: "service0", Kind: discoverd.EventKindDown, Instance: &discoverd.Instance{ID: "inst0"}}) {
+		t.Fatalf("unexpected event(0): %#v", e)
+	}
+	if e := <-ch; !reflect.DeepEqual(e, &discoverd.Event{Service: "service0", Kind: discoverd.EventKindDown, Instance: &discoverd.Instance{ID: "inst1"}}) {
+		t.Fatalf("unexpected event(1): %#v", e)
+	}
 }
 
-func md5sum(data string) string {
-	digest := md5.Sum([]byte(data))
-	return hex.EncodeToString(digest[:])
+// Ensure the store returns an error when removing non-existent services.
+func TestStore_RemoveService_ErrNotFound(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.RemoveService("no_such_service"); !server.IsNotFound(err) {
+		t.Fatalf("unexpected error: %s", err)
+	}
+}
+
+// Ensure the store can add instances to a service.
+func TestStore_AddInstance(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add an instances to the service.
+	if err := s.AddInstance("service0", &discoverd.Instance{ID: "inst0"}); err != nil {
+		t.Fatal(err)
+	} else if err = s.AddInstance("service0", &discoverd.Instance{ID: "inst1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify that the instances exist.
+	if a := s.Instances("service0"); !reflect.DeepEqual(a, []*discoverd.Instance{
+		{ID: "inst0"},
+		{ID: "inst1"},
+	}) {
+		t.Fatalf("unexpected instances: %#v", a)
+	}
+}
+
+// Ensure the store can add instances to a service.
+func TestStore_AddInstance_ErrNotFound(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddInstance("no_such_service", &discoverd.Instance{ID: "inst0"}); !server.IsNotFound(err) {
+		t.Fatalf("unexpected error: %s", err)
+	}
+}
+
+// Ensure the store sends an "up" event when adding a new service.
+func TestStore_AddInstance_UpEvent(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add subscription.
+	ch := make(chan *discoverd.Event, 1)
+	s.Subscribe("service0", false, discoverd.EventKindUp, ch)
+
+	// Add instance.
+	if err := s.AddInstance("service0", &discoverd.Instance{ID: "inst0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify "up" event was received.
+	if e := <-ch; !reflect.DeepEqual(e, &discoverd.Event{
+		Service:  "service0",
+		Kind:     discoverd.EventKindUp,
+		Instance: &discoverd.Instance{ID: "inst0"},
+	}) {
+		t.Fatalf("unexpected event: %#v", e)
+	}
+}
+
+// Ensure the store sends an "update" event when updating an existing service.
+func TestStore_AddInstance_UpdateEvent(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	} else if err = s.AddInstance("service0", &discoverd.Instance{ID: "inst0", Proto: "http"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add subscription.
+	ch := make(chan *discoverd.Event, 1)
+	s.Subscribe("service0", false, discoverd.EventKindUpdate, ch)
+
+	// Update instance.
+	if err := s.AddInstance("service0", &discoverd.Instance{ID: "inst0", Proto: "https"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify "update" event was received.
+	if e := <-ch; !reflect.DeepEqual(e, &discoverd.Event{
+		Service:  "service0",
+		Kind:     discoverd.EventKindUpdate,
+		Instance: &discoverd.Instance{ID: "inst0", Proto: "https"},
+	}) {
+		t.Fatalf("unexpected event: %#v", e)
+	}
+}
+
+// Ensure the store sends a "leader" event when adding the first instance.
+func TestStore_AddInstance_LeaderEvent(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add subscription.
+	ch := make(chan *discoverd.Event, 1)
+	s.Subscribe("service0", false, discoverd.EventKindLeader, ch)
+
+	// Update instance.
+	if err := s.AddInstance("service0", &discoverd.Instance{ID: "inst0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify "leader" event was received.
+	if e := <-ch; !reflect.DeepEqual(e, &discoverd.Event{
+		Service:  "service0",
+		Kind:     discoverd.EventKindLeader,
+		Instance: &discoverd.Instance{ID: "inst0"},
+	}) {
+		t.Fatalf("unexpected event: %#v", e)
+	}
+}
+
+// Ensure the store can remove an instance from a service.
+func TestStore_RemoveInstance(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	} else if err = s.AddInstance("service0", &discoverd.Instance{ID: "inst0"}); err != nil {
+		t.Fatal(err)
+	} else if err = s.AddInstance("service0", &discoverd.Instance{ID: "inst1"}); err != nil {
+		t.Fatal(err)
+	} else if err = s.AddInstance("service0", &discoverd.Instance{ID: "inst2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove one instance.
+	if err := s.RemoveInstance("service0", "inst1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify the remaining instances.
+	if a := s.Instances("service0"); !reflect.DeepEqual(a, []*discoverd.Instance{
+		{ID: "inst0"},
+		{ID: "inst2"},
+	}) {
+		t.Fatalf("unexpected instances: %#v", a)
+	}
+}
+
+// Ensure the store returns an error when removing an instance from a non-existent service.
+func TestStore_RemoveInstance_ErrNotFound(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.RemoveInstance("no_such_service", "inst0"); !server.IsNotFound(err) {
+		t.Fatalf("unexpected error: %s", err)
+	}
+}
+
+// Ensure the store sends a "down" event when removing an existing service.
+func TestStore_RemoveInstance_DownEvent(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	} else if err = s.AddInstance("service0", &discoverd.Instance{ID: "inst0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add subscription.
+	ch := make(chan *discoverd.Event, 1)
+	s.Subscribe("service0", false, discoverd.EventKindDown, ch)
+
+	// Remove instance.
+	if err := s.RemoveInstance("service0", "inst0"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify "down" event was received.
+	if e := <-ch; !reflect.DeepEqual(e, &discoverd.Event{
+		Service:  "service0",
+		Kind:     discoverd.EventKindDown,
+		Instance: &discoverd.Instance{ID: "inst0"},
+	}) {
+		t.Fatalf("unexpected event: %#v", e)
+	}
+}
+
+// Ensure the store sends a "leader" event when removing an existing service.
+func TestStore_RemoveInstance_LeaderEvent(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeOldest}); err != nil {
+		t.Fatal(err)
+	} else if err = s.AddInstance("service0", &discoverd.Instance{ID: "inst0"}); err != nil {
+		t.Fatal(err)
+	} else if err = s.AddInstance("service0", &discoverd.Instance{ID: "inst1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add subscription.
+	ch := make(chan *discoverd.Event, 1)
+	s.Subscribe("service0", false, discoverd.EventKindLeader, ch)
+
+	// Remove instance, inst1 should become leader.
+	if err := s.RemoveInstance("service0", "inst0"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify "leader" event was received.
+	if e := <-ch; !reflect.DeepEqual(e, &discoverd.Event{
+		Service:  "service0",
+		Kind:     discoverd.EventKindLeader,
+		Instance: &discoverd.Instance{ID: "inst1"},
+	}) {
+		t.Fatalf("unexpected event: %#v", e)
+	}
+}
+
+// Ensure the store can store meta data for a service.
+func TestStore_SetServiceMeta_Create(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set metadata.
+	if err := s.SetServiceMeta("service0", &discoverd.ServiceMeta{Data: []byte(`"foo"`), Index: 0}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify metadata was updated.
+	if m := s.ServiceMeta("service0"); !reflect.DeepEqual(m, &discoverd.ServiceMeta{Data: []byte(`"foo"`), Index: 3}) {
+		t.Fatalf("unexpected meta: %#v", m)
+	}
+}
+
+// Ensure the store returns an error when creating service meta that already exists.
+func TestStore_SetServiceMeta_Create_ErrObjectExists(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	} else if err = s.SetServiceMeta("service0", &discoverd.ServiceMeta{Data: []byte(`"foo"`), Index: 0}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create metadata with index=0.
+	if err := s.SetServiceMeta("service0", &discoverd.ServiceMeta{Data: []byte(`"bar"`), Index: 0}); err == nil || err.Error() != `object_exists: Service metadata for "service0" already exists, use index=n to set` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Ensure the store can update existing meta data for a service.
+func TestStore_SetServiceMeta_Update(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	} else if err = s.SetServiceMeta("service0", &discoverd.ServiceMeta{Data: []byte(`"foo"`), Index: 0}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update using previous index.
+	if err := s.SetServiceMeta("service0", &discoverd.ServiceMeta{Data: []byte(`"bar"`), Index: 3}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify metadata was updated.
+	if m := s.ServiceMeta("service0"); !reflect.DeepEqual(m, &discoverd.ServiceMeta{Data: []byte(`"bar"`), Index: 4}) {
+		t.Fatalf("unexpected meta: %#v", m)
+	}
+}
+
+// Ensure the store returns an error when updating a non-existent service meta.
+func TestStore_SetServiceMeta_Update_ErrPreconditionFailed_Create(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update metadata with index>0.
+	if err := s.SetServiceMeta("service0", &discoverd.ServiceMeta{Data: []byte(`"foo"`), Index: 100}); err == nil || err.Error() != `precondition_failed: Service metadata for "service0" does not exist, use index=0 to set` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Ensure the store returns an error when updating service meta with the wrong CAS index.
+func TestStore_SetServiceMeta_Update_ErrPreconditionFailed_WrongIndex(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	} else if err = s.SetServiceMeta("service0", &discoverd.ServiceMeta{Data: []byte(`"foo"`), Index: 0}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update metadata with wrong previous index.
+	if err := s.SetServiceMeta("service0", &discoverd.ServiceMeta{Data: []byte(`"bar"`), Index: 100}); err == nil || err.Error() != `precondition_failed: Service metadata for "service0" exists, but wrong index provided` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Ensure the store returns an error when setting metadata for a non-existent service.
+func TestStore_SetServiceMeta_ErrNotFound(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.SetServiceMeta("service0", &discoverd.ServiceMeta{Data: []byte(`"foo"`), Index: 0}); !server.IsNotFound(err) {
+		t.Fatalf("unexpected error: %s", err)
+	}
+}
+
+// Ensure the store can manually set a leader for a manual service.
+func TestStore_SetLeader(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}); err != nil {
+		t.Fatal(err)
+	} else if err := s.AddInstance("service0", &discoverd.Instance{ID: "inst0"}); err != nil {
+		t.Fatal(err)
+	} else if err := s.AddInstance("service0", &discoverd.Instance{ID: "inst1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set the leader instance ID.
+	if err := s.SetLeader("service0", "inst1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify that the leader was set.
+	if inst := s.Leader("service0"); !reflect.DeepEqual(inst, &discoverd.Instance{ID: "inst1"}) {
+		t.Fatalf("unexpected leader: %#v", inst)
+	}
+}
+
+// Ensure the store does not error when setting a leader for a non-existent service.
+func TestStore_SetLeader_NoService(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.SetLeader("service0", "inst1"); err != nil {
+		t.Fatal(err)
+	} else if inst := s.Leader("service0"); inst != nil {
+		t.Fatalf("unexpected leader: %#v", inst)
+	}
+}
+
+// Ensure the store does not error when setting a leader for a non-existent instance.
+func TestStore_SetLeader_NoInstance(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetLeader("service0", "inst1"); err != nil {
+		t.Fatal(err)
+	} else if inst := s.Leader("service0"); inst != nil {
+		t.Fatalf("unexpected leader: %#v", inst)
+	}
+}
+
+// Store represents a test wrapper for server.Store.
+type Store struct {
+	*server.Store
+}
+
+// NewStore returns a new instance of Store.
+func NewStore() *Store {
+	// Generate a temporary path.
+	f, _ := ioutil.TempFile("", "discoverd-store-")
+	f.Close()
+	os.Remove(f.Name())
+
+	// Initialize store.
+	s := &Store{Store: server.NewStore(f.Name())}
+
+	// Set default test settings.
+	s.BindAddress = ":20000"
+	s.Advertise, _ = net.ResolveTCPAddr("tcp", "localhost:20000")
+	s.HeartbeatTimeout = 50 * time.Millisecond
+	s.ElectionTimeout = 50 * time.Millisecond
+	s.LeaderLeaseTimeout = 50 * time.Millisecond
+	s.CommitTimeout = 5 * time.Millisecond
+
+	// Turn off logs if verbose flag is not set.
+	if !testing.Verbose() {
+		s.LogOutput = ioutil.Discard
+	}
+
+	return s
+}
+
+// MustOpenStore returns a new, open instance of Store. Panic on error.
+func MustOpenStore() *Store {
+	s := NewStore()
+	if err := s.Open(); err != nil {
+		panic(err)
+	}
+
+	// Wait for leadership.
+	<-s.LeaderCh()
+
+	return s
+}
+
+// Close closes the store and removes its path.
+func (s *Store) Close() error {
+	defer os.RemoveAll(s.Path())
+	return s.Store.Close()
+}
+
+// MockStore represents a mock implementation of Handler.Store.
+type MockStore struct {
+	AddServiceFn     func(service string, config *discoverd.ServiceConfig) error
+	RemoveServiceFn  func(service string) error
+	SetServiceMetaFn func(service string, meta *discoverd.ServiceMeta) error
+	ServiceMetaFn    func(service string) *discoverd.ServiceMeta
+	AddInstanceFn    func(service string, inst *discoverd.Instance) error
+	RemoveInstanceFn func(service, id string) error
+	InstancesFn      func(service string) []*discoverd.Instance
+	ConfigFn         func(service string) *discoverd.ServiceConfig
+	SetLeaderFn      func(service, id string) error
+	LeaderFn         func(service string) *discoverd.Instance
+	SubscribeFn      func(service string, sendCurrent bool, kinds discoverd.EventKind, ch chan *discoverd.Event) stream.Stream
+}
+
+func (s *MockStore) AddService(service string, config *discoverd.ServiceConfig) error {
+	return s.AddServiceFn(service, config)
+}
+
+func (s *MockStore) RemoveService(service string) error {
+	return s.RemoveServiceFn(service)
+}
+
+func (s *MockStore) SetServiceMeta(service string, meta *discoverd.ServiceMeta) error {
+	return s.SetServiceMetaFn(service, meta)
+}
+
+func (s *MockStore) ServiceMeta(service string) *discoverd.ServiceMeta {
+	return s.ServiceMetaFn(service)
+}
+
+func (s *MockStore) AddInstance(service string, inst *discoverd.Instance) error {
+	return s.AddInstanceFn(service, inst)
+}
+
+func (s *MockStore) RemoveInstance(service, id string) error {
+	return s.RemoveInstanceFn(service, id)
+}
+
+func (s *MockStore) Instances(service string) []*discoverd.Instance {
+	return s.InstancesFn(service)
+}
+
+func (s *MockStore) Config(service string) *discoverd.ServiceConfig {
+	return s.ConfigFn(service)
+}
+
+func (s *MockStore) SetLeader(service, id string) error {
+	return s.SetLeaderFn(service, id)
+}
+
+func (s *MockStore) Leader(service string) *discoverd.Instance {
+	return s.LeaderFn(service)
+}
+
+func (s *MockStore) Subscribe(service string, sendCurrent bool, kinds discoverd.EventKind, ch chan *discoverd.Event) stream.Stream {
+	return s.SubscribeFn(service, sendCurrent, kinds, ch)
 }

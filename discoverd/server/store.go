@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -19,8 +20,8 @@ import (
 	"github.com/hashicorp/raft-boltdb"
 )
 
-// DefaultTTL is the length of time after a heartbeat from an instance before it expires.
-const DefaultTTL = 10 * time.Second
+// DefaultInstanceTTL is the length of time after a heartbeat from an instance before it expires.
+const DefaultInstanceTTL = 10 * time.Second
 
 // DefaultServiceConfig is the default configuration for a service when one is not specified.
 var DefaultServiceConfig = &discoverd.ServiceConfig{
@@ -63,6 +64,12 @@ type Store struct {
 	LeaderLeaseTimeout time.Duration
 	CommitTimeout      time.Duration
 
+	// The writer where logs are written to.
+	LogOutput io.Writer
+
+	// The duration without a heartbeat before an instance is expired.
+	InstanceTTL time.Duration
+
 	// Returns the current time.
 	// This defaults to time.Now and can be changed for mocking.
 	Now func() time.Time
@@ -71,15 +78,23 @@ type Store struct {
 // NewStore returns an instance of Store.
 func NewStore(path string) *Store {
 	return &Store{
-		path:               path,
-		data:               newRaftData(),
+		path:        path,
+		data:        newRaftData(),
+		subscribers: make(map[string]*list.List),
+
 		HeartbeatTimeout:   1000 * time.Millisecond,
 		ElectionTimeout:    1000 * time.Millisecond,
 		LeaderLeaseTimeout: 500 * time.Millisecond,
 		CommitTimeout:      50 * time.Millisecond,
-		Now:                time.Now,
+
+		InstanceTTL: DefaultInstanceTTL,
+		LogOutput:   os.Stderr,
+		Now:         time.Now,
 	}
 }
+
+// Path returns the path that the store was initialized with.
+func (s *Store) Path() string { return s.path }
 
 // Open starts the raft consensus and opens the store.
 func (s *Store) Open() error {
@@ -93,12 +108,18 @@ func (s *Store) Open() error {
 		return ErrAdvertiseRequired
 	}
 
+	// Create root directory.
+	if err := os.MkdirAll(s.path, 0777); err != nil {
+		return err
+	}
+
 	// Create raft configuration.
 	config := raft.DefaultConfig()
 	config.HeartbeatTimeout = s.HeartbeatTimeout
 	config.ElectionTimeout = s.ElectionTimeout
 	config.LeaderLeaseTimeout = s.LeaderLeaseTimeout
 	config.CommitTimeout = s.CommitTimeout
+	config.LogOutput = s.LogOutput
 	config.EnableSingleNode = true // FIXME(benbjohnson): allow peers
 
 	// Begin listening to TCP port.
@@ -132,9 +153,39 @@ func (s *Store) Open() error {
 	return nil
 }
 
+// Close shuts down the transport and store.
+func (s *Store) Close() error {
+	if s.raft != nil {
+		s.raft.Shutdown()
+		s.raft = nil
+	}
+	if s.transport != nil {
+		s.transport.Close()
+		s.transport = nil
+	}
+	if s.stableStore != nil {
+		s.stableStore.Close()
+		s.stableStore = nil
+	}
+	return nil
+}
+
+// LeaderCh returns a channel that signals leadership change.
+// Panic if called before store is opened.
+func (s *Store) LeaderCh() <-chan bool { return s.raft.LeaderCh() }
+
 // ServiceNames returns a sorted list of existing service names.
 func (s *Store) ServiceNames() []string {
-	panic("not yet implemented") // FIXME(benbjohnson)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var a []string
+	for name := range s.data.Services {
+		a = append(a, name)
+	}
+	sort.Strings(a)
+
+	return a
 }
 
 // AddService creates a service with a configuration.
@@ -175,7 +226,9 @@ func (s *Store) applyAddServiceCommand(cmd []byte) error {
 
 // Config returns the configuration for service.
 func (s *Store) Config(service string) *discoverd.ServiceConfig {
-	panic("not yet implemented") // FIXME(benbjohnson): Return config
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.data.Services[service]
 }
 
 // RemoveService deletes the service from the store.
@@ -203,11 +256,19 @@ func (s *Store) applyRemoveServiceCommand(cmd []byte) error {
 	// Remove the service.
 	delete(s.data.Services, c.Service)
 
-	// FIXME(benbjohnson): Broadcast EventKindDown for all instances on the service.
+	// Broadcast EventKindDown for all instances on the service.
+	for _, inst := range s.data.Instances[c.Service] {
+		s.broadcast(&discoverd.Event{
+			Service:  c.Service,
+			Kind:     discoverd.EventKindDown,
+			Instance: inst.Instance,
+		})
+	}
 
 	return nil
 }
 
+// Instances returns a list of instances for service.
 func (s *Store) Instances(service string) []*discoverd.Instance {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -215,7 +276,13 @@ func (s *Store) Instances(service string) []*discoverd.Instance {
 }
 
 func (s *Store) instances(service string) []*discoverd.Instance {
-	panic("not yet implemented") // FIXME(benbjohnson): Return service instances.
+	var a []*discoverd.Instance
+	for _, inst := range s.data.Instances[service] {
+		var other = *inst.Instance
+		a = append(a, &other)
+	}
+	sort.Sort(instanceSlice(a))
+	return a
 }
 
 func (s *Store) AddInstance(service string, inst *discoverd.Instance) error {
@@ -246,17 +313,36 @@ func (s *Store) applyAddInstanceCommand(cmd []byte) error {
 	if s.data.Instances[c.Service] == nil {
 		s.data.Instances[c.Service] = make(map[string]instanceEntry)
 	}
+
+	// Check if the instance already exists.
+	_, existing := s.data.Instances[c.Service][c.Instance.ID]
+
+	// Check if the existing instance is being updated.
+	updating := (existing && !c.Instance.Equal(s.data.Instances[c.Service][c.Instance.ID].Instance))
+
+	// Update entry.
 	s.data.Instances[c.Service][c.Instance.ID] = instanceEntry{
 		Instance:   c.Instance,
-		ExpiryTime: s.Now().Add(DefaultTTL),
+		ExpiryTime: s.Now().Add(s.InstanceTTL),
 	}
 
-	// FIXME(benbjohnson): maybeSetLeader
+	// Broadcast "up" event if new instance.
+	if !existing {
+		s.broadcast(&discoverd.Event{
+			Service:  c.Service,
+			Kind:     discoverd.EventKindUp,
+			Instance: c.Instance,
+		})
+	} else if updating {
+		s.broadcast(&discoverd.Event{
+			Service:  c.Service,
+			Kind:     discoverd.EventKindUpdate,
+			Instance: c.Instance,
+		})
+	}
 
-	// FIXME(benbjohnson): Broadcast EventKindUp event if new instance.
-	// FIXME(benbjohnson): Broadcast EventKindUpdate event if instance changed.
-
-	// FIXME(benbjohnson): Broadcast leader.
+	// Update leader, if necessary.
+	s.invalidateLeader(c.Service)
 
 	return nil
 }
@@ -286,11 +372,20 @@ func (s *Store) applyRemoveInstanceCommand(cmd []byte) error {
 	}
 
 	// Remove instance data.
+	entry := s.data.Instances[c.Service][c.ID]
 	delete(s.data.Instances[c.Service], c.ID)
 
-	// FIXME(benbjohnson): Pick leader if service is not manual.
-	// FIXME(benbjohnson): Broadcast EventKindDown event.
-	// FIXME(benbjohnson): Broadcast leader change.
+	// Broadcast "down" event for instance.
+	if entry.Instance != nil {
+		s.broadcast(&discoverd.Event{
+			Service:  c.Service,
+			Kind:     discoverd.EventKindDown,
+			Instance: entry.Instance,
+		})
+	}
+
+	// Invalidate leadership.
+	s.invalidateLeader(c.Service)
 
 	return nil
 }
@@ -388,17 +483,75 @@ func (s *Store) Leader(service string) *discoverd.Instance {
 }
 
 func (s *Store) leader(service string) *discoverd.Instance {
-	panic("not yet implemented") // FIXME(benbjohnson)
+	// Find instance ID of the leader.
+	instanceID := s.data.Leaders[service]
+
+	// Ignore if there are no instances on the service.
+	m := s.data.Instances[service]
+	if m == nil {
+		return nil
+	}
+	if _, ok := m[instanceID]; !ok {
+		return nil
+	}
+
+	// Return instance specified by the leader id.
+	return m[instanceID].Instance
 }
 
-func (s *Store) Close() error {
-	if s.transport != nil {
-		s.transport.Close()
+// invalidateLeader updates the current leader of service.
+func (s *Store) invalidateLeader(service string) {
+	// Retrieve service config.
+	c := s.data.Services[service]
+
+	// Ignore if there is no config or the leader is manually elected.
+	if c == nil || c.LeaderType == discoverd.LeaderTypeManual {
+		return
 	}
-	if s.stableStore != nil {
-		s.stableStore.Close()
+
+	// Retrieve current leader ID.
+	prevLeaderID := s.data.Leaders[service]
+
+	// Retrieve the current time.
+	now := s.Now()
+
+	// Find the oldest, non-expired instance.
+	var leader *discoverd.Instance
+	for _, entry := range s.data.Instances[service] {
+		// Ignore expired entries.
+		if entry.ExpiryTime.Before(now) {
+			continue
+		}
+
+		// Set leader if there is no leader or if the index is older.
+		if leader == nil || entry.Instance.Index < leader.Index {
+			leader = entry.Instance
+		}
 	}
-	return nil
+
+	// Retrieve the leader ID.
+	var leaderID string
+	if leader != nil {
+		leaderID = leader.ID
+	}
+
+	// Set leader.
+	s.data.Leaders[service] = leaderID
+
+	// Broadcast event.
+	if prevLeaderID != leaderID {
+		if s.data.Instances[service] == nil {
+			return
+		} else if _, ok := s.data.Instances[service][leaderID]; !ok {
+			return
+		}
+
+		s.broadcast(&discoverd.Event{
+			Service:  service,
+			Kind:     discoverd.EventKindLeader,
+			Instance: s.data.Instances[service][leaderID].Instance,
+		})
+	}
 }
 
 // raftApply joins typ and cmd and applies it to raft.
@@ -538,7 +691,10 @@ func (s *Store) Subscribe(service string, sendCurrent bool, kinds discoverd.Even
 func (s *Store) Broadcast(event *discoverd.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.broadcast(event)
+}
 
+func (s *Store) broadcast(event *discoverd.Event) {
 	// Retrieve list of subscribers for the service.
 	l, ok := s.subscribers[event.Service]
 	if !ok {
@@ -559,7 +715,6 @@ func (s *Store) Broadcast(event *discoverd.Event) {
 		select {
 		case sub.ch <- event:
 		default:
-			// run in a goroutine as it requires a lock on subscribersMtx
 			sub.err = ErrSendBlocked
 			go sub.Close()
 		}
@@ -592,6 +747,13 @@ type instanceEntry struct {
 	Instance   *discoverd.Instance
 	ExpiryTime time.Time
 }
+
+// instanceSlice represents a sortable list of instances by id.
+type instanceSlice []*discoverd.Instance
+
+func (a instanceSlice) Len() int           { return len(a) }
+func (a instanceSlice) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a instanceSlice) Less(i, j int) bool { return a[i].ID < a[j].ID }
 
 // Command type header bytes.
 const (

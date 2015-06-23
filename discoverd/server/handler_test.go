@@ -692,7 +692,7 @@ func TestHandler_GetLeader_ErrNoLeader(t *testing.T) {
 // Handler represents a test wrapper for server.Handler.
 type Handler struct {
 	*server.Handler
-	Store HandlerStore
+	Store MockStore
 }
 
 // NewHandler returns a new, mocked instance Handler.
@@ -700,65 +700,6 @@ func NewHandler() *Handler {
 	h := &Handler{Handler: server.NewHandler()}
 	h.Handler.Store = &h.Store
 	return h
-}
-
-// HandlerStore represents a mock implementation of Handler.Store.
-type HandlerStore struct {
-	AddServiceFn     func(service string, config *discoverd.ServiceConfig) error
-	RemoveServiceFn  func(service string) error
-	SetServiceMetaFn func(service string, meta *discoverd.ServiceMeta) error
-	ServiceMetaFn    func(service string) *discoverd.ServiceMeta
-	AddInstanceFn    func(service string, inst *discoverd.Instance) error
-	RemoveInstanceFn func(service, id string) error
-	InstancesFn      func(service string) []*discoverd.Instance
-	ConfigFn         func(service string) *discoverd.ServiceConfig
-	SetLeaderFn      func(service, id string) error
-	LeaderFn         func(service string) *discoverd.Instance
-	SubscribeFn      func(service string, sendCurrent bool, kinds discoverd.EventKind, ch chan *discoverd.Event) stream.Stream
-}
-
-func (s *HandlerStore) AddService(service string, config *discoverd.ServiceConfig) error {
-	return s.AddServiceFn(service, config)
-}
-
-func (s *HandlerStore) RemoveService(service string) error {
-	return s.RemoveServiceFn(service)
-}
-
-func (s *HandlerStore) SetServiceMeta(service string, meta *discoverd.ServiceMeta) error {
-	return s.SetServiceMetaFn(service, meta)
-}
-
-func (s *HandlerStore) ServiceMeta(service string) *discoverd.ServiceMeta {
-	return s.ServiceMetaFn(service)
-}
-
-func (s *HandlerStore) AddInstance(service string, inst *discoverd.Instance) error {
-	return s.AddInstanceFn(service, inst)
-}
-
-func (s *HandlerStore) RemoveInstance(service, id string) error {
-	return s.RemoveInstanceFn(service, id)
-}
-
-func (s *HandlerStore) Instances(service string) []*discoverd.Instance {
-	return s.InstancesFn(service)
-}
-
-func (s *HandlerStore) Config(service string) *discoverd.ServiceConfig {
-	return s.ConfigFn(service)
-}
-
-func (s *HandlerStore) SetLeader(service, id string) error {
-	return s.SetLeaderFn(service, id)
-}
-
-func (s *HandlerStore) Leader(service string) *discoverd.Instance {
-	return s.LeaderFn(service)
-}
-
-func (s *HandlerStore) Subscribe(service string, sendCurrent bool, kinds discoverd.EventKind, ch chan *discoverd.Event) stream.Stream {
-	return s.SubscribeFn(service, sendCurrent, kinds, ch)
 }
 
 // MustNewHTTPRequest returns a new HTTP request. Panic on error.

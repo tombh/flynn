@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"strconv"
@@ -582,7 +584,9 @@ func fakeStaticInstance(proto, ip string, port uint16) (*discoverd.Instance, tes
 		Addr:  net.JoinHostPort(ip, strconv.Itoa(int(port))),
 		Index: atomic.AddUint64(&dnsIndex, 1),
 	}
-	inst.ID = md5sum(inst.Proto + "-" + inst.Addr)
+
+	digest := md5.Sum([]byte(inst.Proto + "-" + inst.Addr))
+	inst.ID = hex.EncodeToString(digest[:])
 	netIP := net.ParseIP(ip)
 	return inst, testAddr{netIP, port, inst.ID}
 }
