@@ -509,6 +509,26 @@ func TestStore_SetLeader_NoInstance(t *testing.T) {
 	}
 }
 
+// Ensure the store removes blocking subscriptions.
+func TestStore_Subscribe_NoBlock(t *testing.T) {
+	s := MustOpenStore()
+	defer s.Close()
+	if err := s.AddService("service0", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add blocking subscription.
+	ch := make(chan *discoverd.Event, 0)
+	s.Subscribe("service0", false, discoverd.EventKindUp, ch)
+
+	// Add service.
+	if err := s.AddInstance("service0", &discoverd.Instance{ID: "inst0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ensure that program does not hang.
+}
+
 // Store represents a test wrapper for server.Store.
 type Store struct {
 	*server.Store
@@ -531,6 +551,7 @@ func NewStore() *Store {
 	s.ElectionTimeout = 50 * time.Millisecond
 	s.LeaderLeaseTimeout = 50 * time.Millisecond
 	s.CommitTimeout = 5 * time.Millisecond
+	s.EnableSingleNode = true
 
 	// Turn off logs if verbose flag is not set.
 	if !testing.Verbose() {
@@ -561,6 +582,8 @@ func (s *Store) Close() error {
 
 // MockStore represents a mock implementation of Handler.Store.
 type MockStore struct {
+	AddPeerFn        func(peer string) error
+	RemovePeerFn     func(peer string) error
 	AddServiceFn     func(service string, config *discoverd.ServiceConfig) error
 	RemoveServiceFn  func(service string) error
 	SetServiceMetaFn func(service string, meta *discoverd.ServiceMeta) error
@@ -573,6 +596,9 @@ type MockStore struct {
 	LeaderFn         func(service string) *discoverd.Instance
 	SubscribeFn      func(service string, sendCurrent bool, kinds discoverd.EventKind, ch chan *discoverd.Event) stream.Stream
 }
+
+func (s *MockStore) AddPeer(peer string) error    { return s.AddPeerFn(peer) }
+func (s *MockStore) RemovePeer(peer string) error { return s.RemovePeerFn(peer) }
 
 func (s *MockStore) AddService(service string, config *discoverd.ServiceConfig) error {
 	return s.AddServiceFn(service, config)

@@ -12,6 +12,8 @@ import (
 	"github.com/flynn/flynn/pkg/stream"
 )
 
+// FIXME(benbjohnson): Redirect writes to leader.
+
 // StreamBufferSize is the size of the channel buffer used for event subscription.
 const StreamBufferSize = 64 // TODO: Figure out how big this buffer should be.
 
@@ -33,6 +35,9 @@ func NewHandler() *Handler {
 	h.router.PUT("/services/:service/leader", h.servePutLeader)
 	h.router.GET("/services/:service/leader", h.serveGetLeader)
 
+	h.router.POST("/raft/nodes", h.servePostRaftNodes)
+	h.router.DELETE("/raft/nodes", h.serveDeleteRaftNodes)
+
 	h.router.GET("/ping", h.servePing)
 
 	return h
@@ -53,6 +58,9 @@ type Handler struct {
 		SetLeader(service, id string) error
 		Leader(service string) *discoverd.Instance
 		Subscribe(service string, sendCurrent bool, kinds discoverd.EventKind, ch chan *discoverd.Event) stream.Stream
+
+		AddPeer(peer string) error
+		RemovePeer(peer string) error
 	}
 }
 
@@ -283,5 +291,23 @@ func (h *Handler) serveStream(w http.ResponseWriter, params httprouter.Params, k
 	// Check if there was an error while closing.
 	if err := stream.Err(); err != nil {
 		s.CloseWithError(err)
+	}
+}
+
+// servePostRaftNodes joins a node to the store cluster.
+func (h *Handler) servePostRaftNodes(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+	addr := r.FormValue("addr")
+	if err := h.Store.AddPeer(addr); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+// serveDeleteRaftNodes removes a node to the store cluster.
+func (h *Handler) serveDeleteRaftNodes(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+	addr := r.FormValue("addr")
+	if err := h.Store.RemovePeer(addr); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 }

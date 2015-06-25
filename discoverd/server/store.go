@@ -63,6 +63,7 @@ type Store struct {
 	ElectionTimeout    time.Duration
 	LeaderLeaseTimeout time.Duration
 	CommitTimeout      time.Duration
+	EnableSingleNode   bool
 
 	// The writer where logs are written to.
 	LogOutput io.Writer
@@ -120,7 +121,7 @@ func (s *Store) Open() error {
 	config.LeaderLeaseTimeout = s.LeaderLeaseTimeout
 	config.CommitTimeout = s.CommitTimeout
 	config.LogOutput = s.LogOutput
-	config.EnableSingleNode = true // FIXME(benbjohnson): allow peers
+	config.EnableSingleNode = s.EnableSingleNode
 
 	// Begin listening to TCP port.
 	trans, err := raft.NewTCPTransport(s.BindAddress, s.Advertise, 3, 10*time.Second, os.Stderr)
@@ -173,6 +174,16 @@ func (s *Store) Close() error {
 // LeaderCh returns a channel that signals leadership change.
 // Panic if called before store is opened.
 func (s *Store) LeaderCh() <-chan bool { return s.raft.LeaderCh() }
+
+// AddPeer adds a peer to the raft cluster. Panic if store is not open yet.
+func (s *Store) AddPeer(peer string) error {
+	return s.raft.AddPeer(peer).Error()
+}
+
+// RemovePeer removes a peer from the raft cluster. Panic if store is not open yet.
+func (s *Store) RemovePeer(peer string) error {
+	return s.raft.RemovePeer(peer).Error()
+}
 
 // ServiceNames returns a sorted list of existing service names.
 func (s *Store) ServiceNames() []string {
@@ -540,16 +551,15 @@ func (s *Store) invalidateLeader(service string) {
 
 	// Broadcast event.
 	if prevLeaderID != leaderID {
-		if s.data.Instances[service] == nil {
-			return
-		} else if _, ok := s.data.Instances[service][leaderID]; !ok {
-			return
+		var inst *discoverd.Instance
+		if s.data.Instances[service] != nil && s.data.Instances[service][leaderID].Instance != nil {
+			inst = s.data.Instances[service][leaderID].Instance
 		}
 
 		s.broadcast(&discoverd.Event{
 			Service:  service,
 			Kind:     discoverd.EventKindLeader,
-			Instance: s.data.Instances[service][leaderID].Instance,
+			Instance: inst,
 		})
 	}
 }
@@ -687,13 +697,8 @@ func (s *Store) Subscribe(service string, sendCurrent bool, kinds discoverd.Even
 	return sub
 }
 
-// Broadcast sends an event to all subscribers.
-func (s *Store) Broadcast(event *discoverd.Event) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.broadcast(event)
-}
-
+// broadcast sends an event to all subscribers.
+// Requires the mu lock to be obtained.
 func (s *Store) broadcast(event *discoverd.Event) {
 	// Retrieve list of subscribers for the service.
 	l, ok := s.subscribers[event.Service]
