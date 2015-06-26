@@ -214,7 +214,6 @@ func (m *Main) openDNSServer(addr string, recursors []string) error {
 // openHTTPServer initializes and opens the HTTP server.
 // The store must already be open.
 func (m *Main) openHTTPServer(addr string) error {
-	fmt.Println(">", addr)
 	// Open HTTP API.
 	ln, err := net.Listen("tcp4", addr)
 	if err != nil {
