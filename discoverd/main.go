@@ -14,12 +14,18 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/flynn/flynn/discoverd/client"
 	"github.com/flynn/flynn/discoverd/server"
 	"github.com/flynn/flynn/host/types"
 	"github.com/flynn/flynn/pkg/cluster"
 	"github.com/flynn/flynn/pkg/shutdown"
+)
+
+const (
+	// LeaderTimeout is the amount of time discoverd will wait for a leader.
+	LeaderTimeout = 5 * time.Second
 )
 
 func main() {
@@ -120,6 +126,14 @@ func (m *Main) Run(args ...string) error {
 	m.logger.Printf("discoverd listening for HTTP on %s", opt.HTTPAddr)
 
 	// FIXME(benbjohnson): Join to cluster.
+
+	// Wait for leadership.
+	// FIXME(benbjohnson): Wait for any leader, not just local leader.
+	select {
+	case <-time.After(LeaderTimeout):
+		return errors.New("timed out waiting for leader")
+	case <-m.store.LeaderCh():
+	}
 
 	// Notify URL that discoverd is running.
 	httpAddr := m.httpListener.Addr().String()
