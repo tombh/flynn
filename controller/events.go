@@ -170,9 +170,8 @@ func (e *EventListener) Listen() error {
 // Notify notifies all sbscribers of the given event.
 func (e *EventListener) Notify(event *ct.AppEvent) {
 	e.subMtx.RLock()
-	subscribers := e.subscribers
-	e.subMtx.RUnlock()
-	if subs, ok := subscribers[event.AppID]; ok {
+	defer e.subMtx.RUnlock()
+	if subs, ok := e.subscribers[event.AppID]; ok {
 		for sub := range subs {
 			sub.Notify(event)
 		}
