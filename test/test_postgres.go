@@ -160,6 +160,7 @@ func (s *PostgresSuite) testDeploy(t *c.C, d *pgDeploy) {
 			if event.Kind != discoverd.EventKindServiceMeta {
 				continue
 			}
+
 			var state state.State
 			if err := json.Unmarshal(event.ServiceMeta.Data, &state); err != nil {
 				stateCh <- stateChange{err: err}

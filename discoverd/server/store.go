@@ -215,7 +215,10 @@ func (s *Store) AddService(service string, config *discoverd.ServiceConfig) erro
 		return err
 	}
 
-	return s.raftApply(addServiceCommandType, cmd)
+	if _, err := s.raftApply(addServiceCommandType, cmd); err != nil {
+		return err
+	}
+	return err
 }
 
 func (s *Store) applyAddServiceCommand(cmd []byte) error {
@@ -250,7 +253,10 @@ func (s *Store) RemoveService(service string) error {
 		return err
 	}
 
-	return s.raftApply(removeServiceCommandType, cmd)
+	if _, err := s.raftApply(removeServiceCommandType, cmd); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) applyRemoveServiceCommand(cmd []byte) error {
@@ -306,7 +312,10 @@ func (s *Store) AddInstance(service string, inst *discoverd.Instance) error {
 		return err
 	}
 
-	return s.raftApply(addInstanceCommandType, cmd)
+	if _, err := s.raftApply(addInstanceCommandType, cmd); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) applyAddInstanceCommand(cmd []byte) error {
@@ -368,7 +377,10 @@ func (s *Store) RemoveInstance(service, id string) error {
 		return err
 	}
 
-	return s.raftApply(removeInstanceCommandType, cmd)
+	if _, err := s.raftApply(removeInstanceCommandType, cmd); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) applyRemoveInstanceCommand(cmd []byte) error {
@@ -422,7 +434,13 @@ func (s *Store) SetServiceMeta(service string, meta *discoverd.ServiceMeta) erro
 		return err
 	}
 
-	return s.raftApply(setServiceMetaCommandType, cmd)
+	index, err := s.raftApply(setServiceMetaCommandType, cmd)
+	if err != nil {
+		return err
+	}
+	meta.Index = index
+
+	return nil
 }
 
 func (s *Store) applySetServiceMetaCommand(cmd []byte, index uint64) error {
@@ -455,7 +473,12 @@ func (s *Store) applySetServiceMetaCommand(cmd []byte, index uint64) error {
 	c.Meta.Index = index
 	s.data.Metas[c.Service] = c.Meta
 
-	// FIXME(benbjohnson): Broadcast EventKindServiceMeta event.
+	// Broadcast EventKindServiceMeta event.
+	s.broadcast(&discoverd.Event{
+		Service:     c.Service,
+		Kind:        discoverd.EventKindServiceMeta,
+		ServiceMeta: c.Meta,
+	})
 
 	return nil
 }
@@ -471,7 +494,10 @@ func (s *Store) SetLeader(service, id string) error {
 		return err
 	}
 
-	return s.raftApply(setLeaderCommandType, cmd)
+	if _, err := s.raftApply(setLeaderCommandType, cmd); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) applySetLeaderCommand(cmd []byte) error {
@@ -482,7 +508,14 @@ func (s *Store) applySetLeaderCommand(cmd []byte) error {
 
 	s.data.Leaders[c.Service] = c.ID
 
-	// FIXME(benbjohnson): Notify new leadership.
+	// Notify new leadership.
+	if entry, ok := s.data.Instances[c.Service][c.ID]; ok && entry.Instance != nil {
+		s.broadcast(&discoverd.Event{
+			Service:  c.Service,
+			Kind:     discoverd.EventKindLeader,
+			Instance: entry.Instance,
+		})
+	}
 
 	return nil
 }
@@ -566,19 +599,19 @@ func (s *Store) invalidateLeader(service string) {
 
 // raftApply joins typ and cmd and applies it to raft.
 // This call blocks until the apply completes and returns the error.
-func (s *Store) raftApply(typ byte, cmd []byte) error {
+func (s *Store) raftApply(typ byte, cmd []byte) (uint64, error) {
 	// Join the command type and data into one message.
 	buf := append([]byte{typ}, cmd...)
 
 	// Apply to raft and receive an ApplyFuture back.
 	f := s.raft.Apply(buf, 5*time.Second)
 	if err := f.Error(); err != nil {
-		return err
+		return f.Index(), err
 	} else if err, ok := f.Response().(error); ok {
-		return err
+		return f.Index(), err
 	}
 
-	return nil
+	return f.Index(), nil
 }
 
 func (s *Store) Apply(l *raft.Log) interface{} {
