@@ -473,12 +473,12 @@ func TestStore_SetLeader(t *testing.T) {
 	}
 
 	// Set the leader instance ID.
-	if err := s.SetLeader("service0", "inst1"); err != nil {
+	if err := s.SetServiceLeader("service0", "inst1"); err != nil {
 		t.Fatal(err)
 	}
 
 	// Verify that the leader was set.
-	if inst := s.Leader("service0"); !reflect.DeepEqual(inst, &discoverd.Instance{ID: "inst1"}) {
+	if inst := s.ServiceLeader("service0"); !reflect.DeepEqual(inst, &discoverd.Instance{ID: "inst1"}) {
 		t.Fatalf("unexpected leader: %#v", inst)
 	}
 }
@@ -487,9 +487,9 @@ func TestStore_SetLeader(t *testing.T) {
 func TestStore_SetLeader_NoService(t *testing.T) {
 	s := MustOpenStore()
 	defer s.Close()
-	if err := s.SetLeader("service0", "inst1"); err != nil {
+	if err := s.SetServiceLeader("service0", "inst1"); err != nil {
 		t.Fatal(err)
-	} else if inst := s.Leader("service0"); inst != nil {
+	} else if inst := s.ServiceLeader("service0"); inst != nil {
 		t.Fatalf("unexpected leader: %#v", inst)
 	}
 }
@@ -502,9 +502,9 @@ func TestStore_SetLeader_NoInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.SetLeader("service0", "inst1"); err != nil {
+	if err := s.SetServiceLeader("service0", "inst1"); err != nil {
 		t.Fatal(err)
-	} else if inst := s.Leader("service0"); inst != nil {
+	} else if inst := s.ServiceLeader("service0"); inst != nil {
 		t.Fatalf("unexpected leader: %#v", inst)
 	}
 }
@@ -582,20 +582,23 @@ func (s *Store) Close() error {
 
 // MockStore represents a mock implementation of Handler.Store.
 type MockStore struct {
-	AddPeerFn        func(peer string) error
-	RemovePeerFn     func(peer string) error
-	AddServiceFn     func(service string, config *discoverd.ServiceConfig) error
-	RemoveServiceFn  func(service string) error
-	SetServiceMetaFn func(service string, meta *discoverd.ServiceMeta) error
-	ServiceMetaFn    func(service string) *discoverd.ServiceMeta
-	AddInstanceFn    func(service string, inst *discoverd.Instance) error
-	RemoveInstanceFn func(service, id string) error
-	InstancesFn      func(service string) []*discoverd.Instance
-	ConfigFn         func(service string) *discoverd.ServiceConfig
-	SetLeaderFn      func(service, id string) error
-	LeaderFn         func(service string) *discoverd.Instance
-	SubscribeFn      func(service string, sendCurrent bool, kinds discoverd.EventKind, ch chan *discoverd.Event) stream.Stream
+	LeaderFn           func() string
+	AddPeerFn          func(peer string) error
+	RemovePeerFn       func(peer string) error
+	AddServiceFn       func(service string, config *discoverd.ServiceConfig) error
+	RemoveServiceFn    func(service string) error
+	SetServiceMetaFn   func(service string, meta *discoverd.ServiceMeta) error
+	ServiceMetaFn      func(service string) *discoverd.ServiceMeta
+	AddInstanceFn      func(service string, inst *discoverd.Instance) error
+	RemoveInstanceFn   func(service, id string) error
+	InstancesFn        func(service string) []*discoverd.Instance
+	ConfigFn           func(service string) *discoverd.ServiceConfig
+	SetServiceLeaderFn func(service, id string) error
+	ServiceLeaderFn    func(service string) *discoverd.Instance
+	SubscribeFn        func(service string, sendCurrent bool, kinds discoverd.EventKind, ch chan *discoverd.Event) stream.Stream
 }
+
+func (s *MockStore) Leader() string { return s.LeaderFn() }
 
 func (s *MockStore) AddPeer(peer string) error    { return s.AddPeerFn(peer) }
 func (s *MockStore) RemovePeer(peer string) error { return s.RemovePeerFn(peer) }
@@ -632,12 +635,12 @@ func (s *MockStore) Config(service string) *discoverd.ServiceConfig {
 	return s.ConfigFn(service)
 }
 
-func (s *MockStore) SetLeader(service, id string) error {
-	return s.SetLeaderFn(service, id)
+func (s *MockStore) SetServiceLeader(service, id string) error {
+	return s.SetServiceLeaderFn(service, id)
 }
 
-func (s *MockStore) Leader(service string) *discoverd.Instance {
-	return s.LeaderFn(service)
+func (s *MockStore) ServiceLeader(service string) *discoverd.Instance {
+	return s.ServiceLeaderFn(service)
 }
 
 func (s *MockStore) Subscribe(service string, sendCurrent bool, kinds discoverd.EventKind, ch chan *discoverd.Event) stream.Stream {

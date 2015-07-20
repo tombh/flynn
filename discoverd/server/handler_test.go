@@ -96,6 +96,21 @@ func TestHandler_PutService_ErrInvalidJSON(t *testing.T) {
 	}
 }
 
+// Ensure the handler redirects when the store is not the leader.
+func TestHandler_PutService_ErrNotLeader(t *testing.T) {
+	h := NewHandler()
+	h.Store.LeaderFn = func() string { return "host1" }
+	h.Store.AddServiceFn = func(service string, config *discoverd.ServiceConfig) error { return server.ErrNotLeader }
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, MustNewHTTPRequest("PUT", "https://host0/services/abc", strings.NewReader(`{"leader_type":"manual"}`)))
+	if w.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("unexpected status code: %d", w.Code)
+	} else if loc := w.Header().Get("Location"); loc != `https://host1/services/abc` {
+		t.Fatalf("unexpected Location header: %s", loc)
+	}
+}
+
 // Ensure the handler can remove a service.
 func TestHandler_DeleteService(t *testing.T) {
 	h := NewHandler()
@@ -542,7 +557,7 @@ func TestHandler_PutLeader(t *testing.T) {
 		}
 		return &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}
 	}
-	h.Store.SetLeaderFn = func(service, instanceID string) error {
+	h.Store.SetServiceLeaderFn = func(service, instanceID string) error {
 		if service != "abc" {
 			t.Fatalf("set leader: unexpected service: %s", service)
 		} else if instanceID != "xxx" {
@@ -612,7 +627,7 @@ func TestHandler_PutLeader_ErrUnknown(t *testing.T) {
 	h.Store.ConfigFn = func(service string) *discoverd.ServiceConfig {
 		return &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}
 	}
-	h.Store.SetLeaderFn = func(service, instanceID string) error { return errors.New("marker") }
+	h.Store.SetServiceLeaderFn = func(service, instanceID string) error { return errors.New("marker") }
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, MustNewHTTPRequest("PUT", "/services/abc/leader", strings.NewReader(`{"id":"xxx"}`)))
@@ -626,7 +641,7 @@ func TestHandler_PutLeader_ErrUnknown(t *testing.T) {
 // Ensure the handler can retrieve the current leader for a service.
 func TestHandler_GetLeader(t *testing.T) {
 	h := NewHandler()
-	h.Store.LeaderFn = func(service string) *discoverd.Instance {
+	h.Store.ServiceLeaderFn = func(service string) *discoverd.Instance {
 		if service != "abc" {
 			t.Fatalf("unexpected service: %s", service)
 		}
@@ -678,7 +693,7 @@ func TestHandler_GetLeader_Stream(t *testing.T) {
 // Ensure the handler returns an error if there is not a current leader.
 func TestHandler_GetLeader_ErrNoLeader(t *testing.T) {
 	h := NewHandler()
-	h.Store.LeaderFn = func(service string) *discoverd.Instance { return nil }
+	h.Store.ServiceLeaderFn = func(service string) *discoverd.Instance { return nil }
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, MustNewHTTPRequest("GET", "/services/abc/leader", nil))

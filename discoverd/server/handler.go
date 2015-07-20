@@ -12,8 +12,6 @@ import (
 	"github.com/flynn/flynn/pkg/stream"
 )
 
-// FIXME(benbjohnson): Redirect writes to leader.
-
 // StreamBufferSize is the size of the channel buffer used for event subscription.
 const StreamBufferSize = 64 // TODO: Figure out how big this buffer should be.
 
@@ -47,6 +45,7 @@ func NewHandler() *Handler {
 type Handler struct {
 	router *httprouter.Router
 	Store  interface {
+		Leader() string
 		AddService(service string, config *discoverd.ServiceConfig) error
 		RemoveService(service string) error
 		SetServiceMeta(service string, meta *discoverd.ServiceMeta) error
@@ -55,8 +54,8 @@ type Handler struct {
 		RemoveInstance(service, id string) error
 		Instances(service string) []*discoverd.Instance
 		Config(service string) *discoverd.ServiceConfig
-		SetLeader(service, id string) error
-		Leader(service string) *discoverd.Instance
+		SetServiceLeader(service, id string) error
+		ServiceLeader(service string) *discoverd.Instance
 		Subscribe(service string, sendCurrent bool, kinds discoverd.EventKind, ch chan *discoverd.Event) stream.Stream
 
 		AddPeer(peer string) error
@@ -86,7 +85,10 @@ func (h *Handler) servePutService(w http.ResponseWriter, r *http.Request, params
 	}
 
 	// Add the service to the store.
-	if err := h.Store.AddService(service, config); IsServiceExists(err) {
+	if err := h.Store.AddService(service, config); err == ErrNotLeader {
+		h.redirectToLeader(w, r)
+		return
+	} else if IsServiceExists(err) {
 		hh.ObjectExistsError(w, err.Error())
 		return
 	} else if err != nil {
@@ -105,7 +107,10 @@ func (h *Handler) serveDeleteService(w http.ResponseWriter, r *http.Request, par
 	}
 
 	// Delete from the store.
-	if err := h.Store.RemoveService(params.ByName("service")); IsNotFound(err) {
+	if err := h.Store.RemoveService(params.ByName("service")); err == ErrNotLeader {
+		h.redirectToLeader(w, r)
+		return
+	} else if IsNotFound(err) {
 		hh.ObjectNotFoundError(w, err.Error())
 		return
 	} else if err != nil {
@@ -132,7 +137,10 @@ func (h *Handler) servePutServiceMeta(w http.ResponseWriter, r *http.Request, pa
 	}
 
 	// Update the meta in the store.
-	if err := h.Store.SetServiceMeta(params.ByName("service"), meta); IsNotFound(err) {
+	if err := h.Store.SetServiceMeta(params.ByName("service"), meta); err == ErrNotLeader {
+		h.redirectToLeader(w, r)
+		return
+	} else if IsNotFound(err) {
 		hh.ObjectNotFoundError(w, err.Error())
 		return
 	} else if err != nil {
@@ -179,7 +187,10 @@ func (h *Handler) servePutInstance(w http.ResponseWriter, r *http.Request, param
 	}
 
 	// Add instance to service in the store.
-	if err := h.Store.AddInstance(service, inst); IsNotFound(err) {
+	if err := h.Store.AddInstance(service, inst); err == ErrNotLeader {
+		h.redirectToLeader(w, r)
+		return
+	} else if IsNotFound(err) {
 		hh.ObjectNotFoundError(w, err.Error())
 		return
 	} else if err != nil {
@@ -195,7 +206,10 @@ func (h *Handler) serveDeleteInstance(w http.ResponseWriter, r *http.Request, pa
 	instanceID := params.ByName("instance_id")
 
 	// Remove instance from the store.
-	if err := h.Store.RemoveInstance(service, instanceID); IsNotFound(err) {
+	if err := h.Store.RemoveInstance(service, instanceID); err == ErrNotLeader {
+		h.redirectToLeader(w, r)
+		return
+	} else if IsNotFound(err) {
 		hh.ObjectNotFoundError(w, err.Error())
 		return
 	} else if err != nil {
@@ -243,7 +257,10 @@ func (h *Handler) servePutLeader(w http.ResponseWriter, r *http.Request, params 
 	}
 
 	// Manually set the leader on the service.
-	if err := h.Store.SetLeader(service, inst.ID); err != nil {
+	if err := h.Store.SetServiceLeader(service, inst.ID); err == ErrNotLeader {
+		h.redirectToLeader(w, r)
+		return
+	} else if err != nil {
 		hh.Error(w, err)
 		return
 	}
@@ -259,7 +276,7 @@ func (h *Handler) serveGetLeader(w http.ResponseWriter, r *http.Request, params 
 
 	// Otherwise retrieve the current leader.
 	service := params.ByName("service")
-	leader := h.Store.Leader(service)
+	leader := h.Store.ServiceLeader(service)
 	if leader == nil {
 		hh.ObjectNotFoundError(w, "no leader found")
 		return
@@ -297,7 +314,10 @@ func (h *Handler) serveStream(w http.ResponseWriter, params httprouter.Params, k
 // servePostRaftNodes joins a node to the store cluster.
 func (h *Handler) servePostRaftNodes(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 	addr := r.FormValue("addr")
-	if err := h.Store.AddPeer(addr); err != nil {
+	if err := h.Store.AddPeer(addr); err == ErrNotLeader {
+		h.redirectToLeader(w, r)
+		return
+	} else if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -306,8 +326,26 @@ func (h *Handler) servePostRaftNodes(w http.ResponseWriter, r *http.Request, par
 // serveDeleteRaftNodes removes a node to the store cluster.
 func (h *Handler) serveDeleteRaftNodes(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 	addr := r.FormValue("addr")
-	if err := h.Store.RemovePeer(addr); err != nil {
+	if err := h.Store.RemovePeer(addr); err == ErrNotLeader {
+		h.redirectToLeader(w, r)
+		return
+	} else if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+}
+
+// redirectToLeader redirects the request to the current known leader.
+func (h *Handler) redirectToLeader(w http.ResponseWriter, r *http.Request) {
+	// Find the current leader.
+	leader := h.Store.Leader()
+	if leader == "" {
+		hh.Error(w, ErrNoKnownLeader)
+		return
+	}
+
+	// Redirect request to leader node.
+	u := *r.URL
+	u.Host = leader
+	http.Redirect(w, r, u.String(), http.StatusTemporaryRedirect)
 }

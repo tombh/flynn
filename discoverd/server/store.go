@@ -38,6 +38,13 @@ var (
 	ErrBindAddressRequired = errors.New("discoverd: bind address required")
 
 	ErrAdvertiseRequired = errors.New("discoverd: advertised address required")
+
+	// ErrNotLeader is returned when performing an operation on the store when
+	// it is not the current cluster leader.
+	ErrNotLeader = errors.New("discoverd: not leader")
+
+	// ErrNoKnownLeader is returned when there is not a current know cluster leader.
+	ErrNoKnownLeader = errors.New("discoverd: no known leader")
 )
 
 // Store represents a storage backend using the raft protocol.
@@ -170,6 +177,10 @@ func (s *Store) Close() error {
 	}
 	return nil
 }
+
+// Leader returns the host of the current leader. Returns empty string if there is no leader.
+// Panic if called before store is opened.
+func (s *Store) Leader() string { return s.raft.Leader() }
 
 // LeaderCh returns a channel that signals leadership change.
 // Panic if called before store is opened.
@@ -361,8 +372,8 @@ func (s *Store) applyAddInstanceCommand(cmd []byte) error {
 		})
 	}
 
-	// Update leader, if necessary.
-	s.invalidateLeader(c.Service)
+	// Update service leader, if necessary.
+	s.invalidateServiceLeader(c.Service)
 
 	return nil
 }
@@ -407,8 +418,8 @@ func (s *Store) applyRemoveInstanceCommand(cmd []byte) error {
 		})
 	}
 
-	// Invalidate leadership.
-	s.invalidateLeader(c.Service)
+	// Invalidate service leadership.
+	s.invalidateServiceLeader(c.Service)
 
 	return nil
 }
@@ -483,8 +494,8 @@ func (s *Store) applySetServiceMetaCommand(cmd []byte, index uint64) error {
 	return nil
 }
 
-// SetLeader manually sets the leader for a service.
-func (s *Store) SetLeader(service, id string) error {
+// SetServiceLeader manually sets the leader for a service.
+func (s *Store) SetServiceLeader(service, id string) error {
 	// Serialize command.
 	cmd, err := json.Marshal(&setLeaderCommand{
 		Service: service,
@@ -520,13 +531,13 @@ func (s *Store) applySetLeaderCommand(cmd []byte) error {
 	return nil
 }
 
-func (s *Store) Leader(service string) *discoverd.Instance {
+func (s *Store) ServiceLeader(service string) *discoverd.Instance {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.leader(service)
+	return s.serviceLeader(service)
 }
 
-func (s *Store) leader(service string) *discoverd.Instance {
+func (s *Store) serviceLeader(service string) *discoverd.Instance {
 	// Find instance ID of the leader.
 	instanceID := s.data.Leaders[service]
 
@@ -543,8 +554,8 @@ func (s *Store) leader(service string) *discoverd.Instance {
 	return m[instanceID].Instance
 }
 
-// invalidateLeader updates the current leader of service.
-func (s *Store) invalidateLeader(service string) {
+// invalidateServiceLeader updates the current leader of service.
+func (s *Store) invalidateServiceLeader(service string) {
 	// Retrieve service config.
 	c := s.data.Services[service]
 
@@ -605,7 +616,9 @@ func (s *Store) raftApply(typ byte, cmd []byte) (uint64, error) {
 
 	// Apply to raft and receive an ApplyFuture back.
 	f := s.raft.Apply(buf, 5*time.Second)
-	if err := f.Error(); err != nil {
+	if err := f.Error(); err == raft.ErrNotLeader {
+		return 0, ErrNotLeader // hide underlying implementation error
+	} else if err != nil {
 		return f.Index(), err
 	} else if err, ok := f.Response().(error); ok {
 		return f.Index(), err
@@ -702,7 +715,7 @@ func (s *Store) Subscribe(service string, sendCurrent bool, kinds discoverd.Even
 	}
 
 	// Send current leader.
-	if leader := s.leader(service); sendCurrent && kinds&discoverd.EventKindLeader != 0 && leader != nil {
+	if leader := s.serviceLeader(service); sendCurrent && kinds&discoverd.EventKindLeader != 0 && leader != nil {
 		ch <- &discoverd.Event{
 			Service:  service,
 			Kind:     discoverd.EventKindLeader,
