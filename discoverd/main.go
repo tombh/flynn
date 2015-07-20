@@ -128,11 +128,8 @@ func (m *Main) Run(args ...string) error {
 	// FIXME(benbjohnson): Join to cluster.
 
 	// Wait for leadership.
-	// FIXME(benbjohnson): Wait for any leader, not just local leader.
-	select {
-	case <-time.After(LeaderTimeout):
-		return errors.New("timed out waiting for leader")
-	case <-m.store.LeaderCh():
+	if err := m.waitForLeader(LeaderTimeout); err != nil {
+		return err
 	}
 
 	// Notify URL that discoverd is running.
@@ -267,6 +264,21 @@ func (m *Main) Notify(notifyURL, httpURL, dnsAddr string) {
 func MergeHostPort(host, portAddr string) string {
 	_, port, _ := net.SplitHostPort(portAddr)
 	return net.JoinHostPort(host, port)
+}
+
+// waitForLeader polls the store until a leader is found or a timeout occurs.
+func (m *Main) waitForLeader(timeout time.Duration) error {
+	timeoutCh := time.After(timeout)
+	for {
+		select {
+		case <-timeoutCh:
+			return errors.New("timed out waiting for leader")
+		case <-time.After(100 * time.Millisecond):
+			if leader := m.store.Leader(); leader != "" {
+				return nil
+			}
+		}
+	}
 }
 
 // ParseFlags parses the command line flags.

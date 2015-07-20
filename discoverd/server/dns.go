@@ -20,7 +20,7 @@ type DNSServer struct {
 
 	Store interface {
 		Instances(service string) []*discoverd.Instance
-		Leader(service string) *discoverd.Instance
+		ServiceLeader(service string) *discoverd.Instance
 	}
 
 	servers []*dns.Server
@@ -218,7 +218,7 @@ func (d dnsAPI) ServiceLookup(w dns.ResponseWriter, req *dns.Msg) {
 		// we're doing a lookup for a single instance
 		var resInst *discoverd.Instance
 		if leader {
-			resInst = d.Store.Leader(service)
+			resInst = d.Store.ServiceLeader(service)
 		} else {
 			for _, inst := range instances {
 				if inst.ID == instanceID {
