@@ -275,7 +275,14 @@ type DiscoverdConfig struct {
 
 type HostStatus struct {
 	ID        string           `json:"id"`
+	PID       int              `json:"pid"`
 	URL       string           `json:"url"`
 	Discoverd *DiscoverdConfig `json:"discoverd,omitempty"`
 	Network   *NetworkConfig   `json:"network,omitempty"`
+}
+
+type Command struct {
+	Path string   `json:"path"`
+	Args []string `json:"args"`
+	PID  int      `json:"pid"`
 }

@@ -298,6 +298,7 @@ cmd="bin/flynn-test \
   --flynnrc $HOME/.flynnrc \
   --cluster-api https://{{ .Cluster.BridgeIP }}:{{ .ListenPort }}/cluster/{{ .Cluster.ID }} \
   --cli $(pwd)/../cli/bin/flynn \
+  --flynn-host $(pwd)/../host/bin/flynn-host \
   --router-ip {{ .Cluster.RouterIP }} \
   --debug"
 

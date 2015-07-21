@@ -171,3 +171,8 @@ func (c *Host) PullImages(repository, driver, root string, tufDB io.Reader, ch c
 	path := fmt.Sprintf("/host/pull-images?repository=%s&driver=%s&root=%s", repository, driver, root)
 	return c.c.StreamWithHeader("POST", path, header, tufDB, ch)
 }
+
+func (c *Host) Update(name string, args ...string) (pid int, err error) {
+	cmd := &host.Command{Path: name, Args: args}
+	return cmd.PID, c.c.Post("/host/update", cmd, cmd)
+}
