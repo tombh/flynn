@@ -8,7 +8,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/hashicorp/go-msgpack/codec"
+	"github.com/flynn/flynn/Godeps/_workspace/src/github.com/hashicorp/go-msgpack/codec"
 )
 
 // randomTimeout returns a value that is between the minVal and 2x minVal.

@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/flynn/flynn/Godeps/_workspace/src/github.com/hashicorp/raft"
+	"github.com/flynn/flynn/Godeps/_workspace/src/github.com/hashicorp/raft-boltdb"
 	"github.com/flynn/flynn/discoverd/client"
 	hh "github.com/flynn/flynn/pkg/httphelper"
 	"github.com/flynn/flynn/pkg/stream"
-	"github.com/hashicorp/raft"
-	"github.com/hashicorp/raft-boltdb"
 )
 
 // DefaultInstanceTTL is the length of time after a heartbeat from an instance before it expires.

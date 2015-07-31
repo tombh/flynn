@@ -23,6 +23,8 @@ import (
 	"github.com/flynn/flynn/pkg/cluster"
 	"github.com/flynn/flynn/pkg/shutdown"
 	"github.com/flynn/flynn/pkg/version"
+
+	_ "github.com/flynn/flynn/Godeps/_workspace/src/github.com/inconshreveable/gonative"
 )
 
 const configFile = "/etc/flynn/host.json"
