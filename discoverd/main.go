@@ -284,11 +284,12 @@ func (m *Main) waitForLeader(timeout time.Duration) error {
 // ParseFlags parses the command line flags.
 func (m *Main) ParseFlags(args ...string) (Options, error) {
 	var opt Options
-	var recursors string
+	var peers, recursors string
 
 	fs := flag.NewFlagSet("discoverd", flag.ContinueOnError)
 	fs.SetOutput(m.Stderr)
 	fs.StringVar(&opt.DataDir, "data-dir", "", "data directory")
+	fs.StringVar(&peers, "peers", "", "cluster peers")
 	fs.StringVar(&opt.Host, "host", "", "advertised hostname")
 	fs.StringVar(&opt.RaftAddr, "raft-addr", ":1110", "address to serve raft cluster from")
 	fs.StringVar(&opt.HTTPAddr, "http-addr", ":1111", "address to serve HTTP API from")
@@ -296,9 +297,13 @@ func (m *Main) ParseFlags(args ...string) (Options, error) {
 	fs.StringVar(&recursors, "recursors", "8.8.8.8,8.8.4.4", "upstream recursive DNS servers")
 	fs.StringVar(&opt.Notify, "notify", "", "url to send webhook to after starting listener")
 	fs.BoolVar(&opt.WaitNetDNS, "wait-net-dns", false, "start DNS server after host network is configured")
-	fs.StringVar(&opt.Join, "join", "", "address of existing cluster to join")
 	if err := fs.Parse(args); err != nil {
 		return Options{}, err
+	}
+
+	// Split peer hostnames into slice.
+	if peers != "" {
+		opt.Peers = strings.Split(peers, ",")
 	}
 
 	// Split recursors into slice.
@@ -320,11 +325,11 @@ func (m *Main) ParseFlags(args ...string) (Options, error) {
 type Options struct {
 	DataDir    string   // data directory
 	Host       string   // hostname
+	Peers      []string // cluster peers
 	RaftAddr   string   // raft bind address
 	HTTPAddr   string   // http bind address
 	DNSAddr    string   // dns bind address
 	Recursors  []string // dns recursors
 	Notify     string   // notify URL
 	WaitNetDNS bool     // wait for the network DNS
-	Join       string   // host to join to
 }
