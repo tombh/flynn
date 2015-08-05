@@ -196,6 +196,11 @@ func (s *Store) RemovePeer(peer string) error {
 	return s.raft.RemovePeer(peer).Error()
 }
 
+// SetPeers sets a list of peers in the raft cluster. Panic if store is not open yet.
+func (s *Store) SetPeers(peers []string) error {
+	return s.raft.SetPeers(peers).Error()
+}
+
 // ServiceNames returns a sorted list of existing service names.
 func (s *Store) ServiceNames() []string {
 	s.mu.RLock()

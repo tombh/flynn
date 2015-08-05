@@ -20,7 +20,7 @@ func TestMain_ParseFlags(t *testing.T) {
 		"-dns-addr", "127.0.0.1:2000",
 		"-recursors", "7.7.7.7,6.6.6.6",
 		"-notify", "localhost",
-		"-join", "server0:3000",
+		"-peers", "server0:3000,server1:3000,server2:3000",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -37,8 +37,8 @@ func TestMain_ParseFlags(t *testing.T) {
 		t.Fatalf("unexpected recursors: %+v", opt.Recursors)
 	} else if opt.Notify != "localhost" {
 		t.Fatalf("unexpected notify: %s", opt.Notify)
-	} else if opt.Join != "server0:3000" {
-		t.Fatalf("unexpected join: %s", opt.Join)
+	} else if !reflect.DeepEqual(opt.Peers, []string{"server0:3000", "server1:3000", "server2:3000"}) {
+		t.Fatalf("unexpected peers: %s", opt.Peers)
 	}
 }
 

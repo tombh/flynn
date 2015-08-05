@@ -26,7 +26,7 @@ func (s *DNSSuite) SetUpTest(c *C) {
 	s.srv = s.newServer(c, []string{"8.8.8.8", "8.8.4.4"})
 	s.srv.Store = &s.store
 	s.store.InstancesFn = func(service string) []*discoverd.Instance { return nil }
-	s.store.LeaderFn = func(service string) *discoverd.Instance { return nil }
+	s.store.ServiceLeaderFn = func(service string) *discoverd.Instance { return nil }
 	// s.store.AddService("a", DefaultServiceConfig)
 }
 
@@ -599,14 +599,14 @@ type testAddr struct {
 
 // DNSServerStore represents a mock implementation of DNSServer.Store.
 type DNSServerStore struct {
-	InstancesFn func(service string) []*discoverd.Instance
-	LeaderFn    func(service string) *discoverd.Instance
+	InstancesFn     func(service string) []*discoverd.Instance
+	ServiceLeaderFn func(service string) *discoverd.Instance
 }
 
 func (s *DNSServerStore) Instances(service string) []*discoverd.Instance {
 	return s.InstancesFn(service)
 }
 
-func (s *DNSServerStore) Leader(service string) *discoverd.Instance {
-	return s.LeaderFn(service)
+func (s *DNSServerStore) ServiceLeader(service string) *discoverd.Instance {
+	return s.ServiceLeaderFn(service)
 }

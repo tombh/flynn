@@ -10,7 +10,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -78,7 +77,7 @@ func (m *Main) Run(args ...string) error {
 	}
 
 	// Open store & servers.
-	if err := m.openStore(opt.DataDir, opt.RaftAddr, MergeHostPort(opt.Host, opt.RaftAddr), opt.Join); err != nil {
+	if err := m.openStore(opt.DataDir, opt.RaftAddr, MergeHostPort(opt.Host, opt.RaftAddr), opt.Peers); err != nil {
 		return fmt.Errorf("Failed to open store: %s", err)
 	}
 
@@ -162,7 +161,7 @@ func (m *Main) Close() error {
 }
 
 // openStore initializes and opens the store.
-func (m *Main) openStore(path, bindAddress, advertise, join string) error {
+func (m *Main) openStore(path, bindAddress, advertise string, peers []string) error {
 	// Resolve advertised address.
 	addr, err := net.ResolveTCPAddr("tcp", advertise)
 	if err != nil {
@@ -175,7 +174,7 @@ func (m *Main) openStore(path, bindAddress, advertise, join string) error {
 	s.Advertise = addr
 
 	// Allow single node if there's no peers set.
-	s.EnableSingleNode = (join == "")
+	s.EnableSingleNode = (len(peers) <= 1)
 
 	// Open store.
 	if err := s.Open(); err != nil {
@@ -183,23 +182,10 @@ func (m *Main) openStore(path, bindAddress, advertise, join string) error {
 	}
 	m.store = s
 
-	// If join is specified then request to join.
-	if join != "" {
-		u := url.URL{
-			Scheme:   "http",
-			Host:     join,
-			Path:     "/raft/nodes",
-			RawQuery: (&url.Values{"addr": {advertise}}).Encode(),
-		}
-		resp, err := http.Post(u.String(), "text/plain", nil)
-		if err != nil {
-			return fmt.Errorf("joining: %s", err)
-		}
-		defer resp.Body.Close()
-
-		// Return error if necessary.
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("join error: code=%d", resp.StatusCode)
+	// If peers then set peer set.
+	if len(peers) > 0 {
+		if err := s.SetPeers(peers); err != nil {
+			return fmt.Errorf("set peers: %s", err)
 		}
 	}
 
