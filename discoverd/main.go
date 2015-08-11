@@ -289,7 +289,7 @@ func (m *Main) ParseFlags(args ...string) (Options, error) {
 
 	// Split peer hostnames into slice.
 	if peers != "" {
-		opt.Peers = strings.Split(peers, ",")
+		opt.Peers = TrimSpaceSlice(strings.Split(peers, ","))
 	}
 
 	// Split recursors into slice.
@@ -318,4 +318,18 @@ type Options struct {
 	Recursors  []string // dns recursors
 	Notify     string   // notify URL
 	WaitNetDNS bool     // wait for the network DNS
+}
+
+// TrimSpaceSlice returns a new slice of trimmed strings.
+// Empty strings are removed entirely.
+func TrimSpaceSlice(a []string) []string {
+	other := make([]string, 0, len(a))
+	for _, s := range a {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		other = append(other, s)
+	}
+	return other
 }

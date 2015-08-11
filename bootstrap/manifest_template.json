@@ -69,7 +69,7 @@
     "action": "run-app",
     "release": {
       "env": {
-        "DISCOVERD_PEERS": "{{ range $ip := .SortedHostIPs }}http://{{ $ip }}:1110,{{ end }}",
+        "DISCOVERD_PEERS": "{{ range $ip := .SortedHostIPs }}{{ $ip }}:1110,{{ end }}",
         "DISCOVERD": "none"
       },
       "processes": {
