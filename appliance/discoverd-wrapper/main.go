@@ -21,7 +21,7 @@ func main() {
 	}
 }
 
-// Main representations the main program execution.
+// Main represents the main program execution.
 type Main struct {
 	Exec     func(argv0 string, argv []string, envv []string) error
 	LookPath func(file string) (string, error)

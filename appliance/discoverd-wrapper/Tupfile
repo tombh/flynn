@@ -1,4 +1,4 @@
 include_rules
-: |> ./build.sh |> bin/discoverd
+: |> !go ../../discoverd |> bin/discoverd
 : |> !go |> bin/discoverd-wrapper
 : bin/* |> !docker-bootstrapped |>
