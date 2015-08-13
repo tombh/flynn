@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/flynn/flynn/appliance/discoverd"
+	"github.com/flynn/flynn/appliance/discoverd-wrapper"
 )
 
 const (

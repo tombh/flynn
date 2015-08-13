@@ -656,6 +656,8 @@ func (c *Cluster) DumpLogs(buildLog *buildlog.Log) {
 				return
 			}
 		}
+
+		fallback()
 	}
 	if len(c.defaultInstances) > 0 {
 		printLogs("default", c.defaultInstances)

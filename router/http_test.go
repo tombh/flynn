@@ -15,6 +15,7 @@ import (
 
 	. "github.com/flynn/flynn/Godeps/_workspace/src/github.com/flynn/go-check"
 	"github.com/flynn/flynn/Godeps/_workspace/src/golang.org/x/net/websocket"
+	"github.com/flynn/flynn/discoverd/testutil/etcdrunner"
 	"github.com/flynn/flynn/pkg/httpclient"
 	"github.com/flynn/flynn/router/types"
 )

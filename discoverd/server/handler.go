@@ -36,6 +36,7 @@ func NewHandler() *Handler {
 	h.router.PUT("/services/:service/leader", h.servePutLeader)
 	h.router.GET("/services/:service/leader", h.serveGetLeader)
 
+	h.router.GET("/raft/leader", h.serveGetRaftLeader)
 	h.router.POST("/raft/nodes", h.servePostRaftNodes)
 	h.router.DELETE("/raft/nodes", h.serveDeleteRaftNodes)
 
@@ -311,6 +312,17 @@ func (h *Handler) serveStream(w http.ResponseWriter, params httprouter.Params, k
 	if err := stream.Err(); err != nil {
 		s.CloseWithError(err)
 	}
+}
+
+// serveGetRaftLeader returns the current raft leader.
+func (h *Handler) serveGetRaftLeader(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+	leader := h.Store.Leader()
+	if leader == "" {
+		hh.Error(w, ErrNoKnownLeader)
+		return
+	}
+
+	hh.JSON(w, 200, map[string]interface{}{"host": h.Store.Leader()})
 }
 
 // servePostRaftNodes joins a node to the store cluster.
