@@ -37,6 +37,7 @@ func NewHandler() *Handler {
 	h.router.DELETE("/raft/nodes", h.serveDeleteRaftNodes)
 
 	h.router.GET("/ping", h.servePing)
+	h.router.GET(status.Path, status.SimpleHandler(func() error { return nil }))
 
 	return h
 }
@@ -287,8 +288,7 @@ func (h *Handler) serveGetLeader(w http.ResponseWriter, r *http.Request, params 
 }
 
 // servePing returns a 200 OK.
-func (h *Handler) servePing(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
-}
+func (h *Handler) servePing(w http.ResponseWriter, r *http.Request, params httprouter.Params) {}
 
 // serveStream creates a subscription and streams out events in SSE format.
 func (h *Handler) serveStream(w http.ResponseWriter, params httprouter.Params, kind discoverd.EventKind) {
