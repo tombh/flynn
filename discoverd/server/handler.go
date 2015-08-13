@@ -9,6 +9,7 @@ import (
 	"github.com/flynn/flynn/discoverd/client"
 	hh "github.com/flynn/flynn/pkg/httphelper"
 	"github.com/flynn/flynn/pkg/sse"
+	"github.com/flynn/flynn/pkg/status"
 	"github.com/flynn/flynn/pkg/stream"
 )
 
@@ -18,6 +19,8 @@ const StreamBufferSize = 64 // TODO: Figure out how big this buffer should be.
 // NewHandler returns a new instance of Handler.
 func NewHandler() *Handler {
 	h := &Handler{router: httprouter.New()}
+
+	h.router.Handler("GET", status.Path, status.SimpleHandler(func() error { return nil }))
 
 	h.router.PUT("/services/:service", h.servePutService)
 	h.router.DELETE("/services/:service", h.serveDeleteService)
@@ -37,7 +40,6 @@ func NewHandler() *Handler {
 	h.router.DELETE("/raft/nodes", h.serveDeleteRaftNodes)
 
 	h.router.GET("/ping", h.servePing)
-	h.router.GET(status.Path, status.SimpleHandler(func() error { return nil }))
 
 	return h
 }
