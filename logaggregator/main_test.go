@@ -68,9 +68,9 @@ func testClient(c *C, srv *Server) client.Client {
 }
 
 func (s *LogAggregatorTestSuite) TearDownTest(c *C) {
-	s.cleanup()
 	s.api.Close()
 	s.srv.Shutdown()
+	s.cleanup()
 }
 
 func (s *LogAggregatorTestSuite) TestAggregatorListensOnAddr(c *C) {
