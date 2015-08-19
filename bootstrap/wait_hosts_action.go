@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/flynn/flynn/pkg/cluster"

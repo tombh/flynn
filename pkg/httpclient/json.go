@@ -81,7 +81,7 @@ func (c *Client) RawReq(method, path string, header http.Header, in, out interfa
 	rawurl := c.URL + path
 
 	for {
-		resp, err := c.RawReq(method, rawurl, header, in, out)
+		resp, err := c.rawReq(method, rawurl, header, in, out)
 
 		// If this is a redirect then update the URL and try again.
 		if resp != nil && resp.StatusCode == http.StatusTemporaryRedirect {
