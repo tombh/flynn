@@ -28,14 +28,18 @@ outer:
 	for {
 		for h := range hosts {
 			status, err := h.GetStatus()
+			log.Printf("wait-hosts: host: %q: status=%#v, err=%s", h.ID(), status, err)
 			if err != nil {
+				log.Printf("wait-hosts: ->continue")
 				continue
 			}
 			if status.Network != nil && status.Network.Subnet != "" && status.Discoverd != nil && status.Discoverd.URL != "" {
+				log.Printf("wait-hosts: ->up")
 				delete(hosts, h)
 				up++
 			}
 		}
+		log.Printf("wait-hosts: min-hosts: %d", s.MinHosts)
 		if up >= s.MinHosts {
 			break outer
 		}
