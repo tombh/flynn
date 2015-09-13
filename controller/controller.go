@@ -184,10 +184,14 @@ func streamRouterEvents(rc routerc.Client, db *postgres.DB, doneCh chan struct{}
 	return s.Close()
 }
 
+type logClient interface {
+	GetLog(channelID string, options *logaggc.LogOpts) (io.ReadCloser, error)
+}
+
 type handlerConfig struct {
 	db      *postgres.DB
 	cc      clusterClient
-	lc      logaggc.Client
+	lc      logClient
 	rc      routerc.Client
 	pgxpool *pgx.ConnPool
 	keys    []string
@@ -338,7 +342,7 @@ type controllerAPI struct {
 	deploymentRepo *DeploymentRepo
 	eventRepo      *EventRepo
 	clusterClient  clusterClient
-	logaggc        logaggc.Client
+	logaggc        logClient
 	routerc        routerc.Client
 	que            *que.Client
 	caCert         []byte
