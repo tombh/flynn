@@ -56,6 +56,7 @@ var preparedStatements = map[string]string{
 	"resource_insert_app_by_name":         resourceInsertAppByNameQuery,
 	"resource_insert_app_by_name_or_id":   resourceInsertAppByNameOrIDQuery,
 	"resource_delete_by_app":              resourceDeleteByAppQuery,
+	"domain_migration_insert":             domainMigrationInsert,
 }
 
 func PrepareStatements(conn *pgx.Conn) error {
@@ -251,4 +252,6 @@ VALUES ((SELECT app_id FROM apps WHERE app_id = $1 OR name = $2), $3)
 RETURNING app_id`
 	resourceDeleteByAppQuery = `
 UPDATE app_resources SET deleted_at = now() WHERE app_id = $1 AND deleted_at IS NULL`
+	domainMigrationInsert = `
+INSERT INTO domain_migrations (old_domain, domain, old_tls_cert, tls_cert) VALUES ($1, $2, $3, $4) RETURNING migration_id, created_at`
 )
