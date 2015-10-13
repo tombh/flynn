@@ -17,9 +17,7 @@ import (
 
 	c "github.com/flynn/flynn/Godeps/_workspace/src/github.com/flynn/go-check"
 	"github.com/flynn/flynn/cli/config"
-	cc "github.com/flynn/flynn/controller/client"
 	ct "github.com/flynn/flynn/controller/types"
-	"github.com/flynn/flynn/discoverd/client"
 	"github.com/flynn/flynn/host/resource"
 	"github.com/flynn/flynn/pkg/attempt"
 	"github.com/flynn/flynn/pkg/random"
@@ -35,57 +33,6 @@ const UUIDRegex = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 
 func (s *CLISuite) flynn(t *c.C, args ...string) *CmdResult {
 	return flynn(t, "/", args...)
-}
-
-func (s *CLISuite) newCliTestApp(t *c.C) *cliTestApp {
-	app, release := s.createApp(t)
-	watcher, err := s.controllerClient(t).WatchJobEvents(app.Name, release.ID)
-	t.Assert(err, c.IsNil)
-	return &cliTestApp{
-		name:    app.Name,
-		disc:    s.discoverdClient(t),
-		t:       t,
-		watcher: watcher,
-	}
-}
-
-type cliTestApp struct {
-	name    string
-	watcher *cc.JobWatcher
-	disc    *discoverd.Client
-	t       *c.C
-}
-
-func (a *cliTestApp) flynn(args ...string) *CmdResult {
-	return flynn(a.t, "/", append([]string{"-a", a.name}, args...)...)
-}
-
-func (a *cliTestApp) flynnCmd(args ...string) *exec.Cmd {
-	return flynnCmd("/", append([]string{"-a", a.name}, args...)...)
-}
-
-func (a *cliTestApp) waitFor(events ct.JobEvents) string {
-	var id string
-	idSetter := func(e *ct.Job) error {
-		id = e.ID
-		return nil
-	}
-
-	a.t.Assert(a.watcher.WaitFor(events, scaleTimeout, idSetter), c.IsNil)
-	return id
-}
-
-func (a *cliTestApp) waitForService(name string) {
-	_, err := a.disc.Instances(name, 30*time.Second)
-	a.t.Assert(err, c.IsNil)
-}
-
-func (a *cliTestApp) sh(cmd string) *CmdResult {
-	return a.flynn("run", "sh", "-c", cmd)
-}
-
-func (a *cliTestApp) cleanup() {
-	a.watcher.Close()
 }
 
 func (s *CLISuite) TestCreateAppNoGit(t *c.C) {
