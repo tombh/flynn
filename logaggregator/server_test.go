@@ -24,7 +24,7 @@ var _ = Suite(&ServerTestSuite{})
 
 func (s *ServerTestSuite) TestServerDurability(c *C) {
 	srv := testServer(c)
-	go srv.Run()
+	c.Assert(srv.Start(), IsNil)
 	defer srv.Shutdown()
 
 	cl := testClient(c, srv)
@@ -57,7 +57,7 @@ func (s *ServerTestSuite) TestServerDurability(c *C) {
 
 func (s *ServerTestSuite) TestHostCursors(c *C) {
 	srv := testServer(c)
-	go srv.Run()
+	c.Assert(srv.Start(), IsNil)
 	defer srv.Shutdown()
 	cl := testClient(c, srv)
 
