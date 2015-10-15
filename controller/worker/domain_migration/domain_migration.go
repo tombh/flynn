@@ -168,7 +168,7 @@ func (m *migration) waitForDeployment(app string) error {
 	log := m.logger.New("app", app, "deployment", d.ID)
 	log.Info("waiting for deployment")
 
-	timeout := time.After(time.Minute)
+	timeout := time.After(2 * time.Minute)
 	for {
 		select {
 		case event := <-events:
