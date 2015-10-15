@@ -165,6 +165,9 @@ func (m *migration) waitForDeployment(app string) error {
 	}
 	defer stream.Close()
 
+	log := m.logger.New("app", app, "deployment", d.ID)
+	log.Info("waiting for deployment")
+
 	timeout := time.After(time.Minute)
 	for {
 		select {
@@ -174,69 +177,92 @@ func (m *migration) waitForDeployment(app string) error {
 				return err
 			}
 			if data.Status == "complete" {
+				log.Info("deployment complete")
 				return nil
 			}
 			if data.Status == "failed" {
+				log.Error("deployment failed", "error", data.Error)
 				return errors.New(data.Error)
 			}
 		case <-timeout:
-			return errors.New("timed out waiting for deployment")
+			err := errors.New("timed out waiting for deployment")
+			log.Error(err.Error())
+			return err
 		}
 	}
 }
 
 func (m *migration) maybeDeployController() error {
 	const appName = "controller"
+	log := m.logger.New("app", appName)
 	if err := m.waitForDeployment(appName); err != nil {
 		return err
 	}
 	release, err := m.client.GetAppRelease(appName)
 	if err != nil {
+		log.Error("error fetching release", "error", err)
 		return err
 	}
 	if release.Env["DEFAULT_ROUTE_DOMAIN"] != m.dm.OldDomain {
+		log.Info("already migrated")
 		return nil
 	}
 	release = dupRelease(release)
 	release.Env["DEFAULT_ROUTE_DOMAIN"] = m.dm.Domain
 	release.Env["CA_CERT"] = m.dm.TLSCert.CACert
 	if err := m.client.CreateRelease(release); err != nil {
+		log.Error("error creating release", "error", err)
 		return err
 	}
-	return m.client.DeployAppRelease(appName, release.ID)
+	if err := m.client.DeployAppRelease(appName, release.ID); err != nil {
+		log.Error("error deploying release", "error", err)
+		return err
+	}
+	return nil
 }
 
 func (m *migration) maybeDeployRouter() error {
 	const appName = "router"
+	log := m.logger.New("app", appName)
 	if err := m.waitForDeployment(appName); err != nil {
 		return err
 	}
 	release, err := m.client.GetAppRelease(appName)
 	if err != nil {
+		log.Error("error fetching release", "error", err)
 		return err
 	}
 	if release.Env["TLSCERT"] != m.dm.OldTLSCert.Cert {
+		log.Info("already migrated")
 		return nil
 	}
 	release = dupRelease(release)
 	release.Env["TLSCERT"] = m.dm.TLSCert.Cert
 	release.Env["TLSKEY"] = m.dm.TLSCert.PrivateKey
 	if err := m.client.CreateRelease(release); err != nil {
+		log.Error("error creating release", "error", err)
 		return err
 	}
-	return m.client.DeployAppRelease(appName, release.ID)
+	if err := m.client.DeployAppRelease(appName, release.ID); err != nil {
+		log.Error("error deploying release", "error", err)
+		return err
+	}
+	return nil
 }
 
 func (m *migration) maybeDeployDashboard() error {
 	const appName = "dashboard"
+	log := m.logger.New("app", appName)
 	if err := m.waitForDeployment(appName); err != nil {
 		return err
 	}
 	release, err := m.client.GetAppRelease(appName)
 	if err != nil {
+		log.Error("error fetching release", "error", err)
 		return err
 	}
 	if release.Env["DEFAULT_ROUTE_DOMAIN"] != m.dm.OldDomain {
+		log.Info("already migrated")
 		return nil
 	}
 	release = dupRelease(release)
@@ -245,9 +271,14 @@ func (m *migration) maybeDeployDashboard() error {
 	release.Env["CONTROLLER_DOMAIN"] = fmt.Sprintf("controller.%s", m.dm.Domain)
 	release.Env["URL"] = fmt.Sprintf("dashboard.%s", m.dm.Domain)
 	if err := m.client.CreateRelease(release); err != nil {
+		log.Error("error creating release", "error", err)
 		return err
 	}
-	return m.client.DeployAppRelease(appName, release.ID)
+	if err := m.client.DeployAppRelease(appName, release.ID); err != nil {
+		log.Error("error deploying release", "error", err)
+		return err
+	}
+	return nil
 }
 
 func (m *migration) createMissingRoutes() error {
