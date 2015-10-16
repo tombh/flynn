@@ -146,6 +146,10 @@ outer:
 	}
 }
 
+func (c *Client) Shutdown() error {
+	return c.c.Get("/shutdown", nil)
+}
+
 type service struct {
 	client *Client
 	name   string

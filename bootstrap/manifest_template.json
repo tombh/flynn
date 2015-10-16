@@ -31,7 +31,8 @@
           "data": true,
           "resurrect": true,
           "host_network": true,
-          "omni": true
+          "omni": true,
+          "service": "discoverd"
         }
       }
     },
@@ -238,7 +239,7 @@
     "app": {
       "name": "discoverd",
       "meta": {"flynn-system-app": "true"},
-      "strategy": "one-by-one"
+      "strategy": "discoverd-meta"
     }
   },
   {
