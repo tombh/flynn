@@ -91,6 +91,8 @@ func (s *DomainMigrationSuite) migrateDomain(t *c.C, dm *ct.DomainMigration) {
 	t.Assert(dashboardRelease.Env["URL"], c.Equals, fmt.Sprintf("dashboard.%s", dm.Domain))
 	t.Assert(dashboardRelease.Env["CA_CERT"], c.Equals, cert.CACert)
 
+	time.Sleep(time.Second)
+
 	res, err := (&http.Client{}).Get(fmt.Sprintf("http://controller.%s/ping", dm.Domain))
 	t.Assert(err, c.IsNil)
 	t.Assert(res.StatusCode, c.Equals, 200, c.Commentf("failed to ping controller"))
